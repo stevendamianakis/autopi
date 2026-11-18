@@ -1,0 +1,50 @@
+# Copy to models.local.yaml and set the actual model ids/URLs before running.
+# API secrets are read from environment variables, never stored in this file.
+models:
+  target:
+    provider: openai-compatible
+    model: YOUR_SERVED_MODEL_ID
+    base_url: http://localhost:8000/v1
+    tool_mode: prompted
+    thinking: "off"
+    temperature: 0.0
+    top_p: 0.9
+    timeout: 240
+    # For endpoints whose native parser strips prompted-tool text:
+    # tokenizer_path: /path/to/exact/served/tokenizer.json
+
+  generator:
+    provider: openai-compatible
+    model: YOUR_SERVED_GENERATOR_MODEL_ID
+    base_url: http://localhost:8000/v1
+    thinking: "off"
+    temperature: 0.7
+    max_tokens: 1024
+    timeout: 240
+    # tokenizer_path: /path/to/exact/served/tokenizer.json
+
+  arena-target:
+    provider: openai-compatible
+    model: YOUR_SERVED_MODEL_ID
+    base_url: http://localhost:8000/v1
+    tool_mode: native
+    thinking: "off"
+    temperature: 0.0
+    max_tokens: 4096
+    timeout: 1200
+
+  arena-judge:
+    provider: openai-compatible
+    model: YOUR_SERVED_JUDGE_MODEL_ID
+    base_url: http://localhost:8000/v1
+    tool_mode: native
+    thinking: "off"
+    timeout: 1200
+
+  # A hosted target can use a completely different provider and model.
+  hosted-example:
+    provider: openai
+    model: YOUR_API_MODEL_ID
+    api_key_env: OPENAI_API_KEY
+    thinking: server
+    tool_mode: native

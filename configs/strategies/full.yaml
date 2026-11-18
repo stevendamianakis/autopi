@@ -1,0 +1,12 @@
+version: 1
+budget: 529
+stop: first_success
+blocks:
+  - kind: seed
+  - kind: sweep
+    id: exploration
+    level: 1
+    order: priority
+  - kind: sweep_exploit
+    source: exploration
+    reps: 3

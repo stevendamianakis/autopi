@@ -1,0 +1,9 @@
+version: 1
+budget: 133
+stop: first_success
+blocks:
+  - kind: seed
+  - kind: sweep
+    id: exploration
+    level: 1
+    order: priority

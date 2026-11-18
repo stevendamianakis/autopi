@@ -1,0 +1,30 @@
+# An illustrative research strategy, not one of the paper's measured runs.
+version: 1
+budget: 80
+stop: budget
+blocks:
+  - kind: seed
+  - kind: seed_exploit
+    reps: 4
+  - kind: sweep
+    id: first_sweep
+    level: 1
+    techniques: [F1, F2]
+    order: random
+    order_seed: 42
+    limit: 12
+  - kind: sweep_exploit
+    source: first_sweep
+    reps: 2
+  - kind: sweep
+    id: second_sweep
+    level: 2
+    techniques: [F1.T2, F2.T5]
+    order: canonical
+    pool_size: 6
+    limit: 10
+  - kind: sweep_exploit
+    source: second_sweep
+    reps: 2
+  - kind: seed_exploit
+    reps: 4

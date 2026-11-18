@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "Please cite the AutoPI paper when using this software. Author metadata can be updated for the public paper."
+type: software
+title: "AutoPI: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in LLM Agents"
+authors:
+  - name: "The AutoPI Authors"
+version: 0.2.0
+date-released: 2026-11-18
+license: MIT
