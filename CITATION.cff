@@ -1,9 +1,14 @@
 cff-version: 1.2.0
-message: "Please cite the AutoPI paper when using this software. Author metadata can be updated for the public paper."
+message: "If you use AutoPI, please cite the paper."
 type: software
 title: "AutoPI: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in LLM Agents"
 authors:
-  - name: "The AutoPI Authors"
+  - family-names: Damianakis
+    given-names: Stavros
+  - family-names: Psounis
+    given-names: Konstantinos
 version: 0.2.0
 date-released: 2026-11-18
 license: MIT
+repository-code: "https://github.com/stevendamianakis/autopi"
+url: "https://stevendamianakis.github.io/autopi-site/"
