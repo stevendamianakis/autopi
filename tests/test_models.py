@@ -411,3 +411,114 @@ def test_benchmark_data_digest_uses_the_full_scenario_set_not_the_task_selection
     assert benchmark_data_digest(selected) == benchmark_data_digest(whole)
     # ... and it is not the hash of the selected subset (the pre-0.2.5 behaviour).
     assert benchmark_data_digest(selected) != benchmark_data_digest(subset_only)
+
+
+# ── 0.2.6: unclosed reasoning, settings that reach the request, native-client checks ──
+
+def test_prompted_target_drops_a_reasoning_block_cut_off_before_it_closes():
+    """A reply cut off inside <think> (a token cap) must not have the call it was weighing
+    executed by AgentDojo's prompted parser."""
+    pytest.importorskip("agentdojo")
+    from agentdojo.agent_pipeline.llms.local_llm import _parse_model_output
+
+    cut_off = 'Checking. <think>Maybe <function=send_money>{"recipient": "X", "amount": 100}</function> or'
+    message = SimpleNamespace(content=cut_off, tool_calls=None)
+    client, _ = _mock_openai_client(SimpleNamespace(choices=[SimpleNamespace(message=message)]))
+    instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1",
+                                                   tool_mode="prompted", thinking="on"))
+    text = client.chat.completions.create(model="m", messages=[]).choices[0].message.content
+    assert text == "Checking."
+    assert _parse_model_output(text)["tool_calls"] == []
+
+
+def test_ipi_reply_handling_of_an_unclosed_block_is_unchanged():
+    # IPI Arena replies keep their 0.2.5 handling; only the AgentDojo prompted parser drops it.
+    from autopi.models.clients import visible_text
+
+    assert visible_text("<think>still reasoning") == "<think>still reasoning"
+    assert visible_text("<think>still reasoning", drop_unclosed=True) == ""
+
+
+def test_anthropic_generator_sends_extra_body_through_the_real_sdk(monkeypatch):
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")
+    sent = []
+
+    def reply(request):
+        sent.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "id": "msg_offline", "type": "message", "role": "assistant", "model": "any-model",
+            "content": [{"type": "text", "text": "line"}], "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    class OfflineAnthropic(anthropic.Anthropic):
+        def __init__(self, **kwargs):
+            super().__init__(http_client=httpx2.Client(transport=httpx2.MockTransport(reply)), **kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", OfflineAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-value")
+    query_endpoint(ModelEndpoint("anthropic", "any-model", extra_body={"thinking": {"type": "adaptive"}}), "prompt")
+    assert sent[0]["thinking"] == {"type": "adaptive"}
+
+
+def test_google_generator_applies_extra_body_and_omit_parameters(monkeypatch):
+    genai_models = pytest.importorskip("google.genai.models")
+    from google.genai import types as gt
+
+    configs = []
+
+    def generate_content(self, *, model, contents, config=None):
+        configs.append(config)
+        return gt.GenerateContentResponse(candidates=[gt.Candidate(content=gt.Content(
+            role="model", parts=[gt.Part(text="line")]))])
+
+    monkeypatch.setattr(genai_models.Models, "generate_content", generate_content)
+    monkeypatch.setenv("GOOGLE_API_KEY", "offline-test-value")
+    endpoint = ModelEndpoint("google", "any-model", extra_body={"seed": 7},
+                             omit_parameters=["temperature", "max_tokens"])
+    assert query_endpoint(endpoint, "prompt") == "line"
+    assert configs[0] == {"seed": 7}               # temperature and the output cap are left out
+
+
+def test_google_target_omission_also_clears_agentdojo_own_values():
+    from google.genai import types as gt
+
+    from autopi.models.registry import _instrument_google
+
+    captured = []
+    resource = SimpleNamespace(generate_content=lambda **kwargs: captured.append(kwargs["config"]))
+    _instrument_google(resource, ModelEndpoint("google", "g", omit_parameters=["temperature", "max_tokens"]), None)
+    # The config AgentDojo's Gemini client builds: temperature 0 and a 65,535-token cap.
+    resource.generate_content(model="g", contents=[], config=gt.GenerateContentConfig(temperature=0.0,
+                                                                                      max_output_tokens=65535))
+    assert captured[0].temperature is None and captured[0].max_output_tokens is None
+
+
+def test_reasoning_effort_is_refused_by_native_anthropic_and_google_clients(monkeypatch):
+    from autopi.models.endpoints import EndpointConfigError
+
+    for provider in ("anthropic", "google"):
+        with pytest.raises(EndpointConfigError, match="reasoning_effort"):
+            query_endpoint(ModelEndpoint(provider, "m", reasoning_effort="high"), "prompt")
+    # On the OpenAI-compatible paths (every IPI Arena client included) it still reaches the request.
+    message = SimpleNamespace(content="ok", tool_calls=None)
+    client, calls = _mock_openai_client(SimpleNamespace(choices=[SimpleNamespace(message=message)]))
+    instrument_openai_client(client, ModelEndpoint("google", "gemini-x", reasoning_effort="high"))
+    client.chat.completions.create(model="gemini-x", messages=[])
+    assert calls[0]["reasoning_effort"] == "high"
+
+
+def test_reasoning_effort_is_refused_for_native_agentdojo_targets(monkeypatch):
+    pytest.importorskip("agentdojo")
+    pytest.importorskip("google.genai")
+    from autopi.models.endpoints import EndpointConfigError
+    from autopi.models.registry import build_target_pipeline
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "offline-test-value")
+    with pytest.raises(EndpointConfigError, match="reasoning_effort"):
+        build_target_pipeline("google:g", endpoint=ModelEndpoint("google", "g", reasoning_effort="low"))
+
+
+def test_anthropic_endpoints_cannot_omit_the_required_max_tokens():
+    with pytest.raises(ValueError, match="max_tokens"):
+        ModelEndpoint("anthropic", "m", omit_parameters=["max_tokens"])

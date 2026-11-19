@@ -1,5 +1,20 @@
 # Release notes
 
+## Version 0.2.6
+
+A bug-fix release. IPI Arena's own scoring and AgentDojo's own execution and
+scoring are unchanged, and no bundled benchmark source changed.
+
+| Area | Fix |
+|---|---|
+| Cut-off reasoning, prompted tools | An AgentDojo prompted target's reply that was cut off inside a `<think>` block (for example by a token cap) loses everything from that `<think>` on before AgentDojo parses tool calls. Version 0.2.5 removed only closed blocks, so a call the model was still weighing could be executed |
+| Tool arguments that are not an object | Native tool-call arguments that are valid JSON but not an object (`[]`, `null`, a string or a number) count as a model crash, like cut-off JSON. Before, they stopped the run |
+| Generator settings | The Anthropic generator sends `extra_body`, and the Google generator applies `extra_body` and `omit_parameters`. The 0.2.5 entry saying that `extra_body` reaches Anthropic and Google native requests and that `omit_parameters` is applied to Google requests is wrong for the generators, which ignored both until this release |
+| Google AgentDojo target | `omit_parameters` also removes AgentDojo's own value of an omitted field (its Gemini client always sets temperature 0 and a 65,535-token cap), and `max_tokens` names the Google output cap. In 0.2.5 only AutoPI's own overrides were left out, so the request still carried AgentDojo's values |
+| Settings a client cannot send | `reasoning_effort` on a native Anthropic or Google client (an AgentDojo target or a generator) is refused instead of dropped; it still reaches the OpenAI-compatible paths, IPI Arena's clients included. An `anthropic` alias that omits `max_tokens`, which the API requires, is refused when it loads |
+| Strategy stop rule in Python | `run_attack` follows a strategy's own `stop` rule when the caller passes no `stop_at_first_success`. Before, a `stop: budget` strategy stopped at the first success through the Python interface; the command line was not affected |
+| IPI Arena documentation | The adapter states that a judge reply whose JSON score is not a number makes IPI Arena's judge raise, so the run is an error (left out of ASR, as IPI Arena does), and that each harness retry re-runs the whole scenario. Scoring is unchanged |
+
 ## Version 0.2.5
 
 A bug-fix release. IPI Arena's own scoring is unchanged, and so is AgentDojo's own

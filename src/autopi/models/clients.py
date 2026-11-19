@@ -12,11 +12,33 @@ from autopi.models.endpoints import ModelEndpoint
 from autopi.models.recovery import get_decoder
 
 
-def visible_text(content: str | None) -> str:
-    """Keep the visible answer when an endpoint leaks a reasoning delimiter."""
+def google_omitted_fields(endpoint: ModelEndpoint) -> set[str]:
+    """The GenerateContentConfig field names of ``omit_parameters`` (``max_tokens`` is called
+    ``max_output_tokens`` there)."""
+    return {{"max_tokens": "max_output_tokens"}.get(key, key) for key in endpoint.omit_parameters}
+
+
+def require_no_reasoning_effort(endpoint: ModelEndpoint) -> None:
+    """The native Anthropic and Google clients have no ``reasoning_effort`` request field, so
+    the setting would be dropped silently. It reaches requests only on OpenAI-compatible paths
+    (OpenAI-compatible, OpenAI and Ollama endpoints, and every IPI Arena client)."""
+    from autopi.models.endpoints import EndpointConfigError
+
+    if endpoint.reasoning_effort:
+        raise EndpointConfigError(
+            f"reasoning_effort is not sent by the native {endpoint.provider} client; put the "
+            "provider's own field (for example its thinking settings) in extra_body instead")
+
+
+def visible_text(content: str | None, *, drop_unclosed: bool = False) -> str:
+    """Keep the visible answer when an endpoint leaks a reasoning delimiter. With
+    ``drop_unclosed``, a ``<think>`` block that never closes (the reply was cut off while the
+    model was still reasoning) is removed too, from its ``<think>`` to the end of the reply."""
     content = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S)
     if "</think>" in content:
         content = content.rpartition("</think>")[2]
+    if drop_unclosed and "<think>" in content:
+        content = content.partition("<think>")[0]
     return content.strip()
 
 
@@ -143,12 +165,13 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                 # AgentDojo's prompted parser (LocalLLM) scans message.content for
                 # ``<function=...>`` text. A thinking target emits a ``<think>...</think>``
                 # block first; strip it so a hypothetical call written inside the reasoning is
-                # not parsed as a real tool call. No-op when no reasoning delimiter is present,
-                # so a thinking-off target is unaffected. Matches IPI Arena's reply handling.
+                # not parsed as a real tool call. A block cut off before ``</think>`` (a token
+                # cap) is reasoning too and is removed. No-op when no reasoning delimiter is
+                # present, so a thinking-off target is unaffected.
                 for choice in getattr(response, "choices", None) or []:
                     message = getattr(choice, "message", None)
                     if message is not None and getattr(message, "content", None):
-                        message.content = visible_text(message.content)
+                        message.content = visible_text(message.content, drop_unclosed=True)
             return response
         except Exception as exc:
             if journal:
@@ -220,12 +243,16 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
     if endpoint.provider == "anthropic":
         import anthropic
 
+        require_no_reasoning_effort(endpoint)
         client = anthropic.Anthropic(api_key=endpoint.api_key(), timeout=endpoint.timeout,
                                      max_retries=endpoint.retries, **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
         # No sampling parameters: the Anthropic API (version 2026-10-21) rejects them on every model.
         payload = dict(model=endpoint.model, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens)
         for key in endpoint.omit_parameters:
             payload.pop(key, None)
+        if endpoint.extra_body:
+            # Anthropic-only request fields (for example thinking settings) go into the body.
+            payload["extra_body"] = dict(endpoint.extra_body)
         if journal:
             journal.emit("llm_request", role=role, request=payload)
         response = client.messages.create(**payload)
@@ -235,16 +262,20 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
     if endpoint.provider == "google":
         from google import genai
 
+        require_no_reasoning_effort(endpoint)
         kwargs = {"api_key": endpoint.api_key(), "http_options": {
             "timeout": int(endpoint.timeout * 1000), "retry_options": {"attempts": endpoint.retries + 1}}}
         if endpoint.base_url:
             kwargs["http_options"]["base_url"] = endpoint.base_url
         client = genai.Client(**kwargs)
-        if journal:
-            journal.emit("llm_request", role=role, model=endpoint.model, prompt=prompt)
         config = {"temperature": temperature, "max_output_tokens": max_tokens}
         if endpoint.top_p is not None:
             config["top_p"] = endpoint.top_p
+        config.update(endpoint.extra_body)              # extra GenerateContentConfig fields
+        for key in google_omitted_fields(endpoint):
+            config.pop(key, None)
+        if journal:
+            journal.emit("llm_request", role=role, model=endpoint.model, prompt=prompt, config=config)
         response = client.models.generate_content(model=endpoint.model, contents=prompt, config=config)
         if journal:
             journal.emit("llm_response_original", role=role, response=response)

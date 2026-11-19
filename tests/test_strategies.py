@@ -174,3 +174,17 @@ def test_a_sweep_block_selecting_zero_combinations_is_rejected():
                 "blocks": [{"kind": "sweep", "id": "s", "level": 2, "techniques": ["F2.T5.S2"]}]}
     with pytest.raises(ValueError, match="0 combinations"):
         StrategyEngine(strategy, **common)
+
+
+def test_run_attack_follows_the_strategy_stop_rule_by_default(monkeypatch):
+    """Through the Python API a strategy's own stop rule applies when the caller passes none."""
+    for stop, attempts in (("budget", 3), ("first_success", 1)):
+        counter = itertools.count()
+        monkeypatch.setattr(engine_module, "query_refiner_llm",
+                            lambda *args: f"[TEMPLATE_START] TEST-GOAL variant {next(counter)} [TEMPLATE_END]")
+        engine = StrategyEngine({"budget": 3, "stop": stop, "blocks": [{"kind": "seed"}, {"kind": "sweep", "limit": 2}]},
+                                refiner_model="test-model", awareness_mode=3, use_judge=False, use_context=False,
+                                use_legitimize=False)
+        adapter = Adapter(hits={1, 2, 3})
+        assert run_attack(adapter, engine, verbose=False).outcomes[0].attempts == attempts
+        assert len(adapter.calls) == attempts

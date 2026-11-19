@@ -155,6 +155,10 @@ def build_target_pipeline(
         import anthropic
         import httpx2
         from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
+
+        from autopi.models.clients import require_no_reasoning_effort
+
+        require_no_reasoning_effort(endpoint)
         # AgentDojo's Anthropic element streams through an async client (it copies a sync
         # client into a new one), so the settings and the trace are applied to that call.
         # AgentDojo runs each query in its own event loop (``asyncio.run``) on this one client.
@@ -172,6 +176,10 @@ def build_target_pipeline(
     elif endpoint.provider == "google":
         from agentdojo.agent_pipeline.llms.google_llm import GoogleLLM
         from google import genai
+
+        from autopi.models.clients import require_no_reasoning_effort
+
+        require_no_reasoning_effort(endpoint)
         options = {"timeout": int(endpoint.timeout * 1000), "retry_options": {"attempts": endpoint.retries + 1}}
         if endpoint.base_url:
             options["base_url"] = endpoint.base_url
@@ -313,6 +321,10 @@ def _instrument_google(resource, endpoint, journal):
     original = resource.generate_content
     signatures = _GeminiThoughtSignatures()
 
+    from autopi.models.clients import google_omitted_fields
+
+    omitted = google_omitted_fields(endpoint)
+
     def call(*args, **kwargs):
         updates = {key: value for key, value in {
             "temperature": endpoint.temperature, "top_p": endpoint.top_p,
@@ -320,11 +332,16 @@ def _instrument_google(resource, endpoint, journal):
         if endpoint.extra_body:
             # Extra GenerateContentConfig fields (e.g. thinking_config) for Google native calls.
             updates.update(endpoint.extra_body)
-        for key in endpoint.omit_parameters:
-            updates.pop(key, None)
+        # An omitted field is cleared, AgentDojo's own value included (its Gemini client always
+        # sets temperature 0 and a 65,535-token cap); the SDK sends no field that is None.
+        updates.update({key: None for key in omitted})
         config = kwargs.get("config")
         if updates:
-            kwargs["config"] = config.model_copy(update=updates) if hasattr(config, "model_copy") else {**(config or {}), **updates}
+            if hasattr(config, "model_copy"):
+                kwargs["config"] = config.model_copy(update=updates)
+            else:
+                kwargs["config"] = {key: value for key, value in {**(config or {}), **updates}.items()
+                                    if value is not None}
         if "contents" in kwargs:
             kwargs["contents"] = signatures.attach(kwargs["contents"])
         if journal:

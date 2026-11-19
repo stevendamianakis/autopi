@@ -133,7 +133,7 @@ def run_attack(
     points: Iterable[AttackPoint] | None = None,
     verbose: bool = True,
     resume: bool = False,
-    stop_at_first_success: bool = True,
+    stop_at_first_success: bool | None = None,
     journal=None,
 ) -> RunSummary:
     """Drive ``engine`` against ``adapter`` over its data points.
@@ -149,10 +149,15 @@ def run_attack(
         points: override the points to attack (defaults to ``adapter.iter_points()``).
         verbose: print a one-line result per point.
         resume: skip data points whose per-pair log already exists.
-        stop_at_first_success: end a data point at its first success (default). Set False
-            to run the point's whole schedule and record every success, for the technique
-            coverage of a scenario or an attempt-level ASR without early stopping.
+        stop_at_first_success: end a data point at its first success. Set False to run the
+            point's whole schedule and record every success, for the technique coverage of a
+            scenario or an attempt-level ASR without early stopping. Left as None, a strategy
+            engine follows its strategy's ``stop`` rule and any other engine stops at the
+            first success.
     """
+    if stop_at_first_success is None:
+        strategy = getattr(engine, "strategy_config", None)
+        stop_at_first_success = strategy["stop"] == "first_success" if strategy else True
     logdir = Path(logdir) if logdir else None
     summary = RunSummary(benchmark=adapter.name, awareness_mode=engine.awareness_mode,
                          stop_at_first_success=stop_at_first_success)

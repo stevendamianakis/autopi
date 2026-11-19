@@ -18,9 +18,9 @@ The YAML `models` mapping supports these fields:
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
 | `temperature`, `top_p`, `max_tokens` | Optional decoding overrides (`anthropic`: `max_tokens` only) |
 | `timeout`, `retries` | Request timeout in seconds and provider retry count |
-| `reasoning_effort` | Optional provider reasoning-effort setting |
-| `extra_body` | Additional provider-specific request fields for compatible APIs |
-| `omit_parameters` | Parameter names to leave out of compatible requests, such as `temperature` or `max_tokens` |
+| `reasoning_effort` | Optional reasoning-effort field, sent on OpenAI-compatible request paths (`openai-compatible`, `openai`, `ollama`, and every IPI Arena client). The native `anthropic` and `google` clients (AgentDojo targets, generators) have no such field and refuse it; use `extra_body` there |
+| `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`) |
+| `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires |
 
 The generator and its diagnostic judge use `--refiner` and share one configured
 endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
@@ -78,7 +78,11 @@ native target at the same server.
 
 An AgentDojo prompted target also has its `<think>...</think>` reasoning removed
 from the reply before tool parsing, so a thinking model does not have a
-hypothetical call inside its reasoning executed.
+hypothetical call inside its reasoning executed. A reply cut off inside a
+`<think>` block (for example by a token cap) loses everything from that `<think>`
+on. A reply whose `<think>` opening is in the chat template rather than the
+reply cannot be told apart from an answer, so for a thinking target serve vLLM
+with a `--reasoning-parser`, which keeps the reasoning out of the reply.
 
 ## Recovering text removed by a server-side tool parser
 

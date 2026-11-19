@@ -181,6 +181,10 @@ def _classify_infra_error(e: Exception) -> str | None:
         # AgentDojo's own parser. Treat it as a model crash, not a blocked attack: count it
         # against the budget and keep it out of the refiner's failed-template history.
         return "model_crash"
+    if type(e).__name__ == "ValidationError" and getattr(e, "title", None) == "FunctionCall":
+        # Valid JSON arguments that are not an object ([], null, "text", 42): AgentDojo cannot
+        # build a FunctionCall from them. The same kind of malformed model output as above.
+        return "model_crash"
     module = type(e).__module__
     if module.split(".")[0] in {"openai", "anthropic", "httpx", "requests"} or \
             module.startswith(("google.genai", "google.api_core")):

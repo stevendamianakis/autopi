@@ -20,9 +20,12 @@ Settings that change what a run measures:
   independent endpoint settings.
 * A harness error (an exception, such as a dead endpoint, a browser failure or a failed judge
   request) is retried and then raised as an :class:`AdapterInfraError`, so it is never scored
-  as a failed attack. Everything else is scored as IPI Arena scores it: a judge reply that
-  cannot be parsed gives its criteria a score of 0, and a WorldSim call that returns no
-  content is answered with ``{"status": "success"}``.
+  as a failed attack; IPI Arena also leaves errored runs out of its ASR. Each retry re-runs
+  the whole scenario, so ``harness_retries=0`` avoids repeating a deterministic error.
+  Everything else is scored as IPI Arena scores it: a judge reply without valid JSON gives its
+  criteria a score of 0, a reply whose JSON score is not a number (``"N/A"``, ``null``) makes
+  IPI Arena's judge raise, so that run is a harness error, and a WorldSim call that returns
+  no content is answered with ``{"status": "success"}``.
 * ``behaviors`` restricts the run to the named scenarios, ``behaviors_path`` (or the
   ``IPI_ARENA_BEHAVIORS_PATH`` environment variable) points at another copy of the scenario
   files. Which ``ipi_arena_bench`` package is installed also matters: copies differ in how
