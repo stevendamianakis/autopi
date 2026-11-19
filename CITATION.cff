@@ -12,3 +12,15 @@ date-released: 2026-11-18
 license: MIT
 repository-code: "https://github.com/stevendamianakis/autopi"
 url: "https://stevendamianakis.github.io/autopi-site/"
+preferred-citation:
+  type: article
+  title: "AutoPI: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in LLM Agents"
+  authors:
+    - family-names: Damianakis
+      given-names: Stavros
+    - family-names: Psounis
+      given-names: Konstantinos
+  journal: "arXiv preprint arXiv:2611.24313"
+  year: 2026
+  doi: "10.48550/arXiv.2611.24313"
+  url: "https://arxiv.org/abs/2611.24313"

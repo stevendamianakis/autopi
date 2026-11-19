@@ -13,6 +13,7 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2611.24313" title="Read the paper on arXiv (2611.24313)"><img src="assets/button-paper.svg" alt="Paper" height="48"></a>
   <a href="https://stevendamianakis.github.io/autopi-site/" title="Method, results and figures"><img src="assets/button-website.svg" alt="Website" height="48"></a>
   <a href="#quick-start" title="Install AutoPI and run a first attack"><img src="assets/button-quickstart.svg" alt="Quick start" height="48"></a>
   <a href="#citation" title="How to cite the paper"><img src="assets/button-cite.svg" alt="Cite" height="48"></a>
@@ -232,11 +233,17 @@ and settings. The repository holds no model weights, credentials, server address
 
 ## Citation
 
+The paper is on arXiv: [arXiv:2611.24313](https://arxiv.org/abs/2611.24313).
+
 ```bibtex
 @misc{damianakis2026autopi,
-  title  = {{AutoPI}: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in {LLM} Agents},
-  author = {Damianakis, Stavros and Psounis, Konstantinos},
-  year   = {2026}
+  title         = {{AutoPI}: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in {LLM} Agents},
+  author        = {Damianakis, Stavros and Psounis, Konstantinos},
+  year          = {2026},
+  eprint        = {2611.24313},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CR},
+  url           = {https://arxiv.org/abs/2611.24313}
 }
 ```
 
