@@ -84,6 +84,29 @@ from autopi.core.taxonomy import (
 _INITIAL_TEMPLATE = IMPORTANT_INSTRUCTIONS_SEED  # backward-compatible module default
 
 
+class GeneratorUnavailableError(RuntimeError):
+    """The generator (or its diagnostic judge) could not be reached after the endpoint's own
+    retries. The run stops before the scenario is logged, so ``--resume`` repeats it."""
+
+    fatal = True
+
+
+def _generator_unreachable(exc: BaseException) -> bool:
+    """A connection failure, timeout, rate limit or server error: the generator is down, as
+    opposed to an answer it returned that cannot be used (which is skipped)."""
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    name = type(exc).__name__
+    if "Connection" in name or "Timeout" in name:
+        return True
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "code", None)
+    return isinstance(status, int) and (status == 429 or status >= 500)
+
+
 class TaxonomyEngine:
     """Benchmark-agnostic PIAtlas taxonomy explore/exploit attacker.
 
@@ -452,6 +475,15 @@ class TaxonomyEngine:
             parts.append("\n" + _LEGITIMIZE_NOTE)
         return "".join(parts)
 
+    def _check_refiner_error(self, e: Exception) -> None:
+        """Stop on a generator that cannot be reached, in a strict run, or on a fatal error.
+        Any other failed request is skipped like an unusable answer."""
+        if _generator_unreachable(e):
+            raise GeneratorUnavailableError(
+                f"the generator could not be reached ({type(e).__name__}: {str(e)[:160]})") from e
+        if self.strict_refiner or getattr(e, "fatal", False):
+            raise RuntimeError("Taxonomy judge/refiner request failed") from e
+
     def _judge_text(self, messages: list, goal: str = "") -> str | None:
         self._judge_mode = None
         if not (self.use_judge and messages):
@@ -462,8 +494,7 @@ class TaxonomyEngine:
             mode, reason, _guidance = _parse_judge(resp)
         except Exception as e:
             print(f"[TAXREFINER] judge error: {e}")
-            if self.strict_refiner or getattr(e, "fatal", False):
-                raise RuntimeError("Taxonomy judge/refiner request failed") from e
+            self._check_refiner_error(e)
             return None
         finally:
             self._querying_judge = False
@@ -525,8 +556,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
             except Exception as e:
                 print(f"[TAXREFINER] {cid} refiner error: {e}")
-                if self.strict_refiner or getattr(e, "fatal", False):
-                    raise RuntimeError("Taxonomy judge/refiner request failed") from e
+                self._check_refiner_error(e)
                 self._record(cid, cname, "taxonomy", None, "refiner_error", raw=str(e)[:200], stack_level=lvl)
                 return None
             template = _extract_template_seq(
@@ -561,8 +591,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
             except Exception as e:
                 print(f"[TAXREFINER] paraphrase refiner error: {e}")
-                if self.strict_refiner or getattr(e, "fatal", False):
-                    raise RuntimeError("Taxonomy judge/refiner request failed") from e
+                self._check_refiner_error(e)
                 self._last_para_raw = str(e)[:200]
                 return None
             template = _extract_template_seq(

@@ -130,6 +130,40 @@ def test_anthropic_target_sends_no_sampling_parameters_through_the_real_sdk(monk
             ModelEndpoint("anthropic", "any-model", **setting)
 
 
+def test_gemini_thought_signatures_go_back_with_their_tool_calls(monkeypatch):
+    """Gemini 3 and later reject a follow-up request whose tool calls lack the thought
+    signatures they came with. AgentDojo's own Gemini client rebuilds the calls without them."""
+    pytest.importorskip("agentdojo")
+    genai_models = pytest.importorskip("google.genai.models")
+    from agentdojo.agent_pipeline.llms.google_llm import GoogleLLM
+    from agentdojo.functions_runtime import FunctionsRuntime
+    from google.genai import types as gt
+
+    from autopi.models.endpoints import ModelEndpoint
+    from autopi.models.registry import build_target_pipeline
+
+    sent = []
+
+    def generate_content(self, *, model, contents, config=None):
+        sent.append(contents)
+        part = (gt.Part(function_call=gt.FunctionCall(name="read_inbox", args={"folder": "work"}),
+                        thought_signature=b"SIG-1") if len(sent) == 1 else gt.Part(text="done"))
+        return gt.GenerateContentResponse(candidates=[gt.Candidate(content=gt.Content(role="model", parts=[part]))])
+
+    monkeypatch.setattr(genai_models.Models, "generate_content", generate_content)
+    monkeypatch.setenv("GOOGLE_API_KEY", "offline-test-value")
+    pipeline = build_target_pipeline("google:any-model", endpoint=ModelEndpoint("google", "any-model"))
+    llm = next(element for element in pipeline.elements if isinstance(element, GoogleLLM))
+    messages = [{"role": "user", "content": [{"type": "text", "content": "check my inbox"}]}]
+    _, _, _, messages, _ = llm.query("check my inbox", FunctionsRuntime([]), messages=messages)
+    call = messages[-1]["tool_calls"][0]
+    messages = [*messages, {"role": "tool", "content": [{"type": "text", "content": "3 emails"}],
+                            "tool_call_id": call.id, "tool_call": call, "error": None}]
+    llm.query("check my inbox", FunctionsRuntime([]), messages=messages)
+    model_turn = next(content for content in sent[1] if content.role == "model")
+    assert [part.thought_signature for part in model_turn.parts if part.function_call] == [b"SIG-1"]
+
+
 def test_provider_errors_of_every_client_are_infrastructure_failures():
     pytest.importorskip("agentdojo")
     anthropic = pytest.importorskip("anthropic")

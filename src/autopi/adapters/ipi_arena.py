@@ -243,7 +243,9 @@ class IPIArenaAdapter:
         self.target_thinking = target_endpoint.thinking
         target_client = _build_vllm_client(target, endpoint=target_endpoint, journal=journal)
         judge_client = _build_vllm_client(judge or target, endpoint=judge_endpoint, journal=journal, role="benchmark_judge")
-        worldsim_client = _build_vllm_client(worldsim or judge or target, endpoint=worldsim_endpoint or judge_endpoint,
+        # WorldSim: its own endpoint, else the model named by ``worldsim``, else the judge's.
+        worldsim_client = _build_vllm_client(worldsim or judge or target,
+                                            endpoint=worldsim_endpoint or (None if worldsim else judge_endpoint),
                                             journal=journal, role="worldsim")
         behaviors_path = behaviors_path or os.environ.get("IPI_ARENA_BEHAVIORS_PATH") or None
         kwargs = {"verbose": verbose}

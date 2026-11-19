@@ -1,5 +1,18 @@
 # Release notes
 
+## Version 0.2.4
+
+A bug-fix release. IPI Arena's own scoring and the bundled benchmark sources are
+unchanged.
+
+| Area | Fix |
+|---|---|
+| Gemini tool calls | AutoPI's clients put Gemini's thought signatures back on the tool calls they came with, through AgentDojo's Gemini client and through the OpenAI-compatible API that IPI Arena uses. Both benchmarks rebuild tool calls without them, and Gemini 3 and later reject such a follow-up request (HTTP 400) |
+| Generator outages | A generator that cannot be reached after its retries stops the run before the scenario is logged, so `--resume` repeats it. Before, every candidate was skipped, the scenario was logged as a failure, and `--resume` skipped it. An answer the generator returns that cannot be used is still skipped |
+| Infrastructure-only scenarios | A scenario whose every attempt was an infrastructure failure is not logged and stays out of ASR; the summary counts it and `--resume` runs it again. Before, it counted as a failed scenario |
+| IPI Arena WorldSim | In the Python interface, a `worldsim` model now takes precedence over `judge_endpoint`. Before, WorldSim ran on the judge's endpoint |
+| Ollama generator | Sends `top_p`, the `api_key_env` value as a bearer token, and retries like the other generators |
+
 ## Version 0.2.3
 
 A bug-fix release. IPI Arena's own scoring is unchanged.

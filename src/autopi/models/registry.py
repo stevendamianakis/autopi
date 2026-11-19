@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from autopi.core.refiner import RefinerConfig
@@ -238,8 +241,67 @@ class _TracedAnthropicStream:
         return getattr(self._stream, name)
 
 
+class _GeminiThoughtSignatures:
+    """Gemini 3 and later reject a request whose function calls of the current turn lack the
+    thought signatures they came with, and AgentDojo's Gemini client rebuilds those calls
+    without them. The signatures of each reply are remembered, keyed by the conversation that
+    preceded it, and put back on the same calls when that conversation is sent again."""
+
+    def __init__(self, size: int = 256):
+        self._by_prefix: OrderedDict[str, list] = OrderedDict()
+        self._size = size
+
+    @staticmethod
+    def _key(contents) -> str:
+        plain = []
+        for content in contents:
+            data = content.model_dump(mode="json", exclude_none=True) if hasattr(content, "model_dump") else content
+            if isinstance(data, dict):
+                for part in data.get("parts") or []:
+                    if isinstance(part, dict):
+                        part.pop("thought_signature", None)
+            plain.append(data)
+        return hashlib.sha256(json.dumps(plain, sort_keys=True, default=str).encode()).hexdigest()
+
+    def remember(self, contents, response) -> None:
+        try:
+            parts = response.candidates[0].content.parts or []
+        except (AttributeError, IndexError, TypeError):
+            return
+        found = [getattr(part, "thought_signature", None) for part in parts if getattr(part, "function_call", None)]
+        if any(found) and isinstance(contents, list):
+            key = self._key(contents)
+            self._by_prefix[key] = found
+            self._by_prefix.move_to_end(key)
+            while len(self._by_prefix) > self._size:
+                self._by_prefix.popitem(last=False)
+
+    def attach(self, contents):
+        if not isinstance(contents, list):
+            return contents
+        out = list(contents)
+        for index, content in enumerate(out):
+            parts = getattr(content, "parts", None) or []
+            calls = [part for part in parts if getattr(part, "function_call", None)]
+            if getattr(content, "role", None) != "model" or not calls or all(part.thought_signature for part in calls):
+                continue
+            found = self._by_prefix.get(self._key(out[:index]))
+            if not found:
+                continue
+            signatures, rebuilt = iter(found), []
+            for part in parts:
+                if getattr(part, "function_call", None):
+                    signature = next(signatures, None)
+                    if signature and not part.thought_signature:
+                        part = part.model_copy(update={"thought_signature": signature})
+                rebuilt.append(part)
+            out[index] = content.model_copy(update={"parts": rebuilt})
+        return out
+
+
 def _instrument_google(resource, endpoint, journal):
     original = resource.generate_content
+    signatures = _GeminiThoughtSignatures()
 
     def call(*args, **kwargs):
         updates = {key: value for key, value in {
@@ -248,9 +310,12 @@ def _instrument_google(resource, endpoint, journal):
         config = kwargs.get("config")
         if updates:
             kwargs["config"] = config.model_copy(update=updates) if hasattr(config, "model_copy") else {**(config or {}), **updates}
+        if "contents" in kwargs:
+            kwargs["contents"] = signatures.attach(kwargs["contents"])
         if journal:
             journal.emit("llm_request", role="target", request=kwargs)
         result = original(*args, **kwargs)
+        signatures.remember(kwargs.get("contents"), result)
         if journal:
             journal.emit("llm_response_original", role="target", response=result)
         return result

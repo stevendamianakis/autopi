@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autopi"
-version = "0.2.3"
+version = "0.2.4"
 description = "AutoPI: a taxonomy-driven, adaptive prompt-injection attacker and evaluation harness for LLM agents, generalized across benchmarks and models."
 readme = "README.md"
 requires-python = ">=3.10"

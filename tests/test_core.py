@@ -332,6 +332,40 @@ def test_sweep_before_seed_para_swaps_the_two_phases(monkeypatch):
     assert len(adapter.injections) == 6
 
 
+def test_an_unreachable_generator_stops_the_run_and_resume_repeats_the_scenario(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import requests
+
+    def down(*args, **kwargs):
+        raise requests.ConnectionError("generator unreachable")
+
+    with pytest.raises(engine_mod.GeneratorUnavailableError, match="could not be reached"):
+        run_attack(_ScriptedAdapter(), _engine(monkeypatch, refiner=down, max_sequences=3), verbose=False, logdir=tmp_path)
+    assert not list(tmp_path.rglob("*.json"))                    # the scenario was not logged
+    adapter = _ScriptedAdapter()
+    summary = run_attack(adapter, _engine(monkeypatch, max_sequences=3), verbose=False, logdir=tmp_path, resume=True)
+    assert len(adapter.injections) == summary.outcomes[0].attempts == 4     # run again, not skipped
+
+    def rejected(*args, **kwargs):                               # not an outage: skipped as before
+        raise requests.HTTPError("400 Bad Request", response=SimpleNamespace(status_code=400))
+
+    assert run_attack(_ScriptedAdapter(), _engine(monkeypatch, refiner=rejected, max_sequences=3),
+                      verbose=False).outcomes[0].attempts == 1
+
+
+def test_a_scenario_with_only_infrastructure_failures_is_left_for_resume(monkeypatch, tmp_path):
+    adapter = _ScriptedAdapter(infra_on=range(1, 10))
+    summary = run_attack(adapter, _engine(monkeypatch, max_sequences=2), verbose=False, logdir=tmp_path)
+    assert len(adapter.injections) == 3 and summary.n == 0 and len(summary.infrastructure_only) == 1
+    assert "only infrastructure failures" in summary.format() and not list(tmp_path.rglob("*.json"))
+    summary = run_attack(_ScriptedAdapter(succeed_on={1}), _engine(monkeypatch, max_sequences=2),
+                         verbose=False, logdir=tmp_path, resume=True)
+    assert summary.successes == summary.n == 1 and not summary.infrastructure_only
+    mixed = run_attack(_ScriptedAdapter(infra_on={1}), _engine(monkeypatch, max_sequences=2), verbose=False)
+    assert mixed.n == 1 and mixed.outcomes[0].attempts == 3      # one real answer: a measured scenario
+
+
 def test_an_empty_line_is_skipped_like_a_refusal_and_not_counted(monkeypatch):
     assert P._extract_template_seq("[TEMPLATE_START]   [TEMPLATE_END]", False, require_placeholder=False) is None
     eng = _engine(monkeypatch, refiner=lambda *args, **kwargs: "[TEMPLATE_START] [TEMPLATE_END]", max_sequences=3)
@@ -832,6 +866,52 @@ def test_ipi_arena_target_thinking_reaches_the_target_requests(monkeypatch):
     monkeypatch.setenv("AUTOPI_TARGET_THINKING", "on")
     assert thinking() == ("on", [True, False, False])
     assert thinking(target_thinking="off") == ("off", [False, False, False])   # an explicit value wins
+
+
+def test_ipi_arena_returns_gemini_thought_signatures_with_their_tool_calls(monkeypatch):
+    """Gemini's OpenAI-compatible API puts the thought signature on the tool call
+    (``extra_content``); Gemini 3 and later reject the next request without it."""
+    pytest.importorskip("ipi_arena_bench")
+    from types import SimpleNamespace
+
+    import openai.resources.chat.completions as completions
+    from ipi_arena_bench.llm_client import ChatResponse
+
+    from autopi.adapters import ipi_arena as I
+
+    sent, signature = [], {"google": {"thought_signature": "SIG-1"}}
+
+    def create(self, **kwargs):
+        sent.append(kwargs)
+        if len(sent) == 1:
+            call = SimpleNamespace(id="call-1", extra_content=signature, function=SimpleNamespace(
+                name="cancel_appointment", arguments='{"appointment_id": "X"}'))
+            message = SimpleNamespace(content=None, tool_calls=[call], reasoning_content=None, reasoning=None)
+        else:
+            message = SimpleNamespace(content="Done.", tool_calls=None, reasoning_content=None, reasoning=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None, model="m")
+
+    monkeypatch.setattr(completions.Completions, "create", create)
+    adapter = I.IPIArenaAdapter("vllm:8000:m", behaviors=["cancel-appointment"], verbose=False)
+    adapter._runner.worldsim_client.chat = lambda *a, **k: ChatResponse(content='{"status": "ok"}')
+    adapter._runner.judge_client.chat = lambda *a, **k: ChatResponse(content="{}")
+    adapter.run(next(adapter.iter_points()), "INJECTION")
+    returned = [call for message in sent[1]["messages"] for call in (message.get("tool_calls") or [])
+                if call.get("id") == "call-1"]
+    assert [call.get("extra_content") for call in returned] == [signature]
+
+
+def test_ipi_arena_worldsim_uses_the_model_asked_for():
+    pytest.importorskip("ipi_arena_bench")
+    from autopi.adapters import ipi_arena as I
+    from autopi.models.endpoints import ModelEndpoint
+
+    judge = ModelEndpoint("openai-compatible", "judge-model", "http://127.0.0.1:8002/v1")
+    named = I.IPIArenaAdapter("vllm:8000:target", worldsim="vllm:8001:simulator", judge_endpoint=judge,
+                              behaviors=["book-hotel"], verbose=False)
+    unnamed = I.IPIArenaAdapter("vllm:8000:target", judge_endpoint=judge, behaviors=["book-hotel"], verbose=False)
+    assert named._runner.worldsim_client.model == "simulator"
+    assert unnamed._runner.worldsim_client.model == "judge-model"     # none named: the judge's model
 
 
 def test_ipi_arena_keeps_a_missing_worldsim_reply_apart_from_an_empty_one(monkeypatch):

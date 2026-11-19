@@ -188,6 +188,29 @@ def test_named_ollama_alias_gets_the_default_server_and_its_thinking_mode(tmp_pa
     build_target_pipeline("local", endpoint=endpoint)               # used to fail on the missing URL
 
 
+def test_ollama_generator_sends_top_p_the_key_and_retries(monkeypatch):
+    import requests
+
+    monkeypatch.setenv("OLLAMA_TEST_KEY", "offline-test-value")
+    monkeypatch.setattr("autopi.models.clients.time.sleep", lambda seconds: None)
+    posts = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        posts.append((url, json, headers))
+        if len(posts) == 1:
+            raise requests.ConnectionError("not up yet")
+        return SimpleNamespace(status_code=200, text="{}", raise_for_status=lambda: None,
+                               json=lambda: {"message": {"content": " the line "}})
+
+    monkeypatch.setattr("autopi.models.clients.requests.post", post)
+    endpoint = ModelEndpoint("ollama", "qwen3:8b", "http://127.0.0.1:9", top_p=0.9,
+                             api_key_env="OLLAMA_TEST_KEY", retries=1)
+    assert query_endpoint(endpoint, "prompt") == "the line"
+    url, payload, headers = posts[-1]
+    assert len(posts) == 2 and url == "http://127.0.0.1:9/api/chat"
+    assert payload["options"]["top_p"] == 0.9 and headers == {"Authorization": "Bearer offline-test-value"}
+
+
 def test_manifest_prevents_mixing_configs_and_tokenizers(tmp_path):
     settings = {"models": {"target": ModelEndpoint("openai", "arbitrary-model").public_config()}, "budget": 10}
     save_run_manifest(tmp_path, settings)

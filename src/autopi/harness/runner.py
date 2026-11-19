@@ -41,6 +41,8 @@ class RunSummary:
     awareness_mode: int
     outcomes: list[PointOutcome] = field(default_factory=list)
     stop_at_first_success: bool = True
+    # Points whose every attempt was an infrastructure failure: not logged, not in ASR.
+    infrastructure_only: list[AttackPoint] = field(default_factory=list)
 
     @property
     def n(self) -> int:
@@ -89,6 +91,9 @@ class RunSummary:
                 f"no early stop: attempt-level ASR={self.attempt_level_asr:.4f} ({hits}/{made})  "
                 f"sub-techniques with a success={len(self.covered_subtechniques)}"
             )
+        if self.infrastructure_only:
+            lines.append(f"only infrastructure failures, left out of ASR and not logged "
+                         f"(--resume runs them again): {len(self.infrastructure_only)}")
         return "\n".join(lines)
 
 
@@ -175,6 +180,7 @@ def run_attack(
         engine.reset(point.user_task_prompt, point.injection_goal)
         succeeded = False
         attempts = 0
+        infrastructure_failures = 0
         first_success_attempt: int | None = None
         infos: list = []
         # has_candidate is False only in no-seed mode when no first candidate could be written.
@@ -195,6 +201,7 @@ def run_attack(
             # a point gets engine.attempt_budget target calls (the seed plus the schedule).
             more = engine.has_attempts_remaining()
             if result is None:
+                infrastructure_failures += 1
                 engine.mark_attempt_infra_failed(infra_kind or "infra")
             else:
                 if result.info and ("action_only" in result.info or "is_break" in result.info):
@@ -216,6 +223,16 @@ def run_attack(
                 break
             if not engine.refine_template(point.injection_goal):
                 break
+
+        if attempts and infrastructure_failures == attempts:
+            # The target never answered: no measurement. Leave the point for --resume.
+            summary.infrastructure_only.append(point)
+            if journal:
+                journal.emit("point_end", succeeded=False, attempts=attempts, infrastructure_only=True)
+            if verbose:
+                print(f"[infra] {adapter.name}/{point.suite}/{point.user_task_id}+{point.injection_task_id}: "
+                      f"all {attempts} attempt(s) failed in the infrastructure; not logged, --resume runs it again")
+            continue
 
         if logdir is not None:
             engine.save_template_log(logdir, point.suite, point.user_task_id, point.injection_task_id, succeeded,

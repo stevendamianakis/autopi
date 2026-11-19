@@ -36,6 +36,12 @@ unless its alias sets `max_tokens`; for a model that thinks by default, the
 thinking counts toward that cap. IPI Arena
 uses native tools via the provider's OpenAI-compatible API. Provider compatibility
 layers may differ from native APIs; record the interface in your results.
+Gemini 3 and later reject a request whose tool calls lack the thought signatures
+they came with, and both benchmarks rebuild tool calls without them, so AutoPI's
+clients put each signature back on its call: through AgentDojo's Gemini client and
+through the OpenAI-compatible API (`extra_content`). An Ollama generator sends
+`top_p`, the `api_key_env` value as a bearer token, and retries like the other
+generators.
 See the official [Claude compatibility documentation](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
 and [Gemini compatibility documentation](https://aistudio.google.com/docs/openai).
 Any other service can be configured as `openai-compatible` with its own URL and

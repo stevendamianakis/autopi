@@ -136,7 +136,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     import re
     from pathlib import Path
 
-    from autopi.core.engine import TaxonomyEngine
+    from autopi.core.engine import GeneratorUnavailableError, TaxonomyEngine
     from autopi.core.refiner import RefinerConfig
     from autopi.core.seeds import resolve_seed
     from autopi.core.strategy import StrategyEngine, load_strategy
@@ -249,6 +249,9 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         summary = run_attack(adapter, engine, logdir=logdir, max_attempts=max_attempts, points=points, resume=resume,
                              stop_at_first_success=stop, journal=journal)
         click.echo("\n" + summary.format())
+    except GeneratorUnavailableError as exc:
+        raise click.ClickException(f"{exc}. The run stopped before this scenario was logged; "
+                                   "run the same command with --resume to continue.") from exc
     except (ValueError, OSError) as exc:
         raise click.UsageError(str(exc)) from exc
 

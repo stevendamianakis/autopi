@@ -60,10 +60,15 @@ and accumulated diagnostic feedback. Repeating a sweep creates fresh source
 lines, tracked by their originating block and target attempt.
 
 Only actual target runs consume the attempt budget. Invalid, empty or refused
-generator outputs are logged and skipped. Infrastructure failures consume budget
-but never become failed source lines or failed-variant examples. Successful source
-lines are not selected for exploitation. If continuing after a successful
-variant, that success is not sent to the diagnostic judge as a failure.
+generator outputs are logged and skipped. A generator that cannot be reached (a
+connection failure, timeout, rate limit or server error after the endpoint's
+retries) stops the run before the scenario is logged, so `--resume` repeats it.
+Infrastructure failures consume budget but never become failed source lines or
+failed-variant examples. A scenario whose every attempt was an infrastructure
+failure is not logged and stays out of ASR; the summary counts it, and `--resume`
+runs it again. Successful source lines are not selected for exploitation. If
+continuing after a successful variant, that success is not sent to the diagnostic
+judge as a failure.
 
 The finite schedule can end before the budget (for example after skipped
 generator outputs or when no failed sources exist). `--max-attempts` can impose
