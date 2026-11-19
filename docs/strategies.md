@@ -59,9 +59,9 @@ sweeps. Repeating an exploit block continues that source's failed-variant histor
 and accumulated diagnostic feedback. Repeating a sweep creates fresh source
 lines, tracked by their originating block and target attempt.
 
-Only actual target runs consume the attempt budget. Invalid/refused generator
-outputs are logged and skipped. Infrastructure failures consume budget but
-never become failed source lines or failed-variant examples. Successful source
+Only actual target runs consume the attempt budget. Invalid, empty or refused
+generator outputs are logged and skipped. Infrastructure failures consume budget
+but never become failed source lines or failed-variant examples. Successful source
 lines are not selected for exploitation. If continuing after a successful
 variant, that success is not sent to the diagnostic judge as a failure.
 

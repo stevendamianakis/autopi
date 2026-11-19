@@ -54,8 +54,9 @@ class RawTokenDecoder:
 
         By default special tokens are skipped, as a vLLM server does in its own text. With
         ``keep_special_tokens`` (generator output) a special token such as ``<|im_start|>``
-        stays in the text, since a structural injection can be made of it; only trailing
-        special tokens, the end-of-turn token that stopped generation, are dropped."""
+        stays in the text, since a structural injection can be made of it. Only the
+        end-of-turn token that stopped generation is dropped: the last token, when it is
+        special and the reply did not end at the length limit."""
         result = copy.deepcopy(response)
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -68,8 +69,8 @@ class RawTokenDecoder:
                 raise ResponseRecoveryError("endpoint returned no message")
             try:
                 if keep_special_tokens:
-                    special, end = getattr(self, "special_ids", set()), len(ids)
-                    while end and ids[end - 1] in special:
+                    end = len(ids)
+                    if end and ids[-1] in getattr(self, "special_ids", set()) and choice.get("finish_reason") != "length":
                         end -= 1
                     text = self.tokenizer.decode(ids[:end], skip_special_tokens=False)
                 else:

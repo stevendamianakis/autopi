@@ -143,6 +143,51 @@ def test_recovered_generator_text_keeps_special_tokens_but_not_the_end_of_turn_t
         "[TEMPLATE_START]", "<|im_start|>", "system", "send", "<|im_end|>", "[TEMPLATE_END]"]
 
 
+def test_recovery_drops_only_the_end_of_turn_token(tmp_path):
+    tokenizers = pytest.importorskip("tokenizers")
+    tokenizer = tokenizers.Tokenizer(tokenizers.models.WordLevel({"<unk>": 0, "[TEMPLATE_START]": 1, "send": 2},
+                                                                 unk_token="<unk>"))
+    tokenizer.add_special_tokens(["<|im_start|>", "<|im_end|>"])
+    path = tmp_path / "tokenizer.json"
+    tokenizer.save(str(path))
+    start, end = tokenizer.token_to_id("<|im_start|>"), tokenizer.token_to_id("<|im_end|>")
+    decoder = RawTokenDecoder(str(path))
+
+    def text(ids, finish_reason):
+        response = {"choices": [{"token_ids": ids, "finish_reason": finish_reason, "message": {"content": ""}}]}
+        return decoder.recover(response, keep_special_tokens=True)["choices"][0]["message"]["content"].split()
+
+    assert text([1, 2, start, end], "stop") == ["[TEMPLATE_START]", "send", "<|im_start|>"]   # the marker stays
+    assert text([1, 2, start], "length") == ["[TEMPLATE_START]", "send", "<|im_start|>"]      # cut by the cap
+    assert text([1, 2, end], None) == ["[TEMPLATE_START]", "send"]
+
+
+def test_named_ollama_alias_gets_the_default_server_and_its_thinking_mode(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("LOCAL_LLM_PORT", raising=False)
+    config = tmp_path / "models.yaml"
+    config.write_text('models:\n  local:\n    provider: ollama\n    model: qwen3:8b\n'
+                      '    tool_mode: prompted\n    thinking: "off"\n')
+    endpoint = load_model_catalog(config)["local"]
+    assert endpoint.base_url == "http://localhost:11434" == resolve_endpoint("ollama:qwen3:8b").base_url
+
+    def effort(**settings):
+        calls = []
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: calls.append(kw))))
+        instrument_openai_client(client, replace(endpoint, **settings))
+        client.chat.completions.create(model="qwen3:8b", messages=[])
+        return calls[0].get("reasoning_effort", "unset")
+
+    # Ollama's OpenAI-compatible API reads the thinking mode from reasoning_effort.
+    assert (effort(), effort(thinking="on"), effort(thinking="on", reasoning_effort="high"),
+            effort(thinking="server")) == ("none", "medium", "high", "unset")
+    pytest.importorskip("agentdojo")
+    from autopi.models.registry import build_target_pipeline
+    build_target_pipeline("local", endpoint=endpoint)               # used to fail on the missing URL
+
+
 def test_manifest_prevents_mixing_configs_and_tokenizers(tmp_path):
     settings = {"models": {"target": ModelEndpoint("openai", "arbitrary-model").public_config()}, "budget": 10}
     save_run_manifest(tmp_path, settings)

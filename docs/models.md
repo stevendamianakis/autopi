@@ -11,10 +11,10 @@ The YAML `models` mapping supports these fields:
 |---|---|
 | `provider` | `openai-compatible`, `openai`, `anthropic`, `google`, `ollama` |
 | `model` | Exact served/API model id; required |
-| `base_url` | Optional custom API URL; required for generic compatible endpoints |
+| `base_url` | Optional custom API URL; required for generic compatible endpoints; `ollama` defaults to `OLLAMA_BASE_URL` or `http://localhost:11434` |
 | `api_key_env` | Name of an environment variable containing the credential |
 | `tool_mode` | AgentDojo: `prompted` text tools or `native` API tools |
-| `thinking` | Compatible endpoint template mode: `off`, `on`, `server` |
+| `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`) |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
 | `temperature`, `top_p`, `max_tokens` | Optional decoding overrides (`anthropic`: `max_tokens` only) |
 | `timeout`, `retries` | Request timeout in seconds and provider retry count |

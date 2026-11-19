@@ -1,5 +1,16 @@
 # Release notes
 
+## Version 0.2.3
+
+A bug-fix release. IPI Arena's own scoring is unchanged.
+
+| Area | Fix |
+|---|---|
+| Empty generator lines | An empty line between the template delimiters is skipped like a refusal: no target call, no attempt counted. In mode 3 it used to be sent to the target as an empty injection and used an attempt |
+| Raw-token recovery | Recovered generator text drops only the end-of-turn token that stopped generation. Version 0.2.2 dropped every special token at the end, so a marker such as `<\|im_start\|>` right before the end of the turn was lost |
+| Ollama server | A named `ollama` alias without `base_url` uses the same default server as an `ollama:MODEL` spec. It used to fail when the run started |
+| Ollama target thinking | An Ollama target receives the thinking mode as `reasoning_effort` (`none` turns thinking off), the field Ollama's OpenAI-compatible API reads. It used to receive nothing, so `thinking: off` had no effect |
+
 ## Version 0.2.2
 
 A bug-fix release that also corrects version 0.2.1. IPI Arena's own scoring is

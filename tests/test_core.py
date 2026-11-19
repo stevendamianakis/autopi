@@ -332,6 +332,15 @@ def test_sweep_before_seed_para_swaps_the_two_phases(monkeypatch):
     assert len(adapter.injections) == 6
 
 
+def test_an_empty_line_is_skipped_like_a_refusal_and_not_counted(monkeypatch):
+    assert P._extract_template_seq("[TEMPLATE_START]   [TEMPLATE_END]", False, require_placeholder=False) is None
+    eng = _engine(monkeypatch, refiner=lambda *args, **kwargs: "[TEMPLATE_START] [TEMPLATE_END]", max_sequences=3)
+    adapter = _ScriptedAdapter()
+    summary = run_attack(adapter, eng, verbose=False)
+    assert len(adapter.injections) == summary.outcomes[0].attempts == 1           # the seed only
+    assert [m["status"] for m in eng._attempt_meta[1:]] == ["unparseable"] * 3
+
+
 def test_sweep_before_seed_para_runs_the_seed_paraphrases_after_an_unwritable_last_candidate(monkeypatch):
     replies = []
 

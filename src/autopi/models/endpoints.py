@@ -29,6 +29,10 @@ class ModelEndpoint:
     def __post_init__(self):
         if self.provider not in {"openai-compatible", "openai", "anthropic", "google", "ollama", "agentdojo"}:
             raise ValueError(f"unsupported provider {self.provider!r}")
+        if self.provider == "ollama" and not self.base_url:
+            # The same default server as an ollama:MODEL spec.
+            object.__setattr__(self, "base_url", os.environ.get(
+                "OLLAMA_BASE_URL", f"http://localhost:{os.environ.get('LOCAL_LLM_PORT', '11434')}"))
         if not self.model or not self.model.strip():
             raise ValueError("a model id is required; AutoPI never substitutes a different model")
         if self.provider == "openai-compatible" and not self.base_url:

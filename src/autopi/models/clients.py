@@ -36,6 +36,13 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
             template["enable_thinking"] = endpoint.thinking == "on"
             extra["chat_template_kwargs"] = template
             kwargs["extra_body"] = extra
+        if endpoint.provider == "ollama" and endpoint.thinking != "server":
+            # Ollama's OpenAI-compatible API reads the thinking mode from reasoning_effort:
+            # "none" turns thinking off, an effort level (the alias's own, else "medium") on.
+            if endpoint.thinking == "off":
+                kwargs["reasoning_effort"] = "none"
+            else:
+                kwargs.setdefault("reasoning_effort", "medium")
         for key in ("temperature", "top_p", "max_tokens"):
             value = getattr(endpoint, key)
             if value is not None:

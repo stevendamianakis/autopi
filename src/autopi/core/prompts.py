@@ -101,8 +101,9 @@ def _extract_template_seq(
     Same contract as ``RefinedInstructionsAttack`` but with sequence-aware
     sanitisation. Modes 1/2 require the placeholder. Mode 3 rejects the
     placeholder because the generated line must already contain the new task
-    (or its faithful paraphrase). Returns None if extraction, the mode-specific
-    placeholder check, or the YAML-safety round-trip fails.
+    (or its faithful paraphrase). Returns None if extraction fails, the line is
+    empty, or the mode-specific placeholder check or the YAML-safety round-trip
+    fails. The engine skips such an answer without a target call.
     """
     match = re.search(r"\[TEMPLATE_START\]\s*(.*?)\s*\[TEMPLATE_END\]", llm_response, re.DOTALL)
     if match:
@@ -119,6 +120,8 @@ def _extract_template_seq(
             return None
 
     template = _sanitize_template_seq(template.strip(), allow_unicode)
+    if not template.strip():                     # an empty line is unusable, like a refusal
+        return None
     if require_placeholder:
         if "<task_goes_here>" not in template:
             return None
