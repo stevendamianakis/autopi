@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autopi"
-version = "0.2.4"
+version = "0.2.5"
 description = "AutoPI: a taxonomy-driven, adaptive prompt-injection attacker and evaluation harness for LLM agents, generalized across benchmarks and models."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,9 +18,11 @@ dependencies = [
 
 # Benchmark backends and model providers are optional extras so the core engine
 # stays light and a user installs only the benchmarks/providers they need.
-# The README installs the two bundled benchmark snapshots from benchmarks/.
+# The two benchmarks are the bundled snapshots under benchmarks/, installed with
+# `pip install -e benchmarks/agentdojo` and `-e benchmarks/ipi_arena`; there is no
+# PyPI `agentdojo` extra, which would install a different version without the
+# bundled patches (see THIRD_PARTY.md).
 [project.optional-dependencies]
-agentdojo = ["agentdojo==0.1.35"]
 recovery = ["tokenizers>=0.20"]
 openai = ["openai>=1.40"]
 anthropic = ["anthropic>=0.34"]

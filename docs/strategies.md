@@ -44,6 +44,9 @@ or infrastructure configuration. Its names/text can be changed with a seed file.
 
 `sweep` generates one candidate per set of `level` taxonomy units. `techniques`
 accepts family, technique or sub-technique ids. Omit it for the full taxonomy.
+A sweep block that selects zero combinations (for example a `level` above the
+number of selected units, or an empty selection) is rejected when the strategy
+loads, rather than running an empty schedule.
 `order` is `priority`, `canonical` (file order), or `random` with `order_seed`.
 Optional `order_ids` is an ordered list of sub-technique ids to put first;
 unlisted selected units follow in the chosen order. `pool_size` restricts the
@@ -80,6 +83,7 @@ those scheduling flags with `--strategy`; define the order and counts in one pla
 Seed selection, model settings, awareness mode, mechanism switches, taxonomy
 path, task selection, sharding and output options apply to either interface.
 
-The included L1, Full and Seed-Exploit files match the paper's intended budgets.
+The included L1, Full and Seed-Exploit files match the paper's intended budgets;
+`repeated-phases.yaml` is a composition example (repeated and reordered blocks).
 Use `--max-attempts 350` with Seed-Exploit for its IPI equal-cost budget. A changed
 taxonomy may contain a different number of units; adjust the budget accordingly.

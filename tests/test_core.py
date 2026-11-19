@@ -1124,3 +1124,113 @@ def test_cli_passes_the_target_settings_to_the_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTOPI_TARGET_THINKING", "sometimes")
     res = CliRunner().invoke(cli_main, [*base, "--logdir", str(tmp_path / "c")])
     assert res.exit_code == 2 and "target thinking" in res.output
+
+
+# ── 0.2.5: quotes kept, YAML escaping, generator config errors, target outage, trace hygiene ──
+
+def test_quotes_and_backslashes_are_kept_and_escaped_for_yaml():
+    # The sanitiser no longer deletes quotes/backslashes; they are escaped at AgentDojo placement.
+    out = P._extract_template_seq('[TEMPLATE_START] reply "yes" to <task_goes_here> now [TEMPLATE_END]', False)
+    assert out is not None and '"yes"' in out
+    assert P.yaml_escape('say "hi" a\\b') == 'say \\"hi\\" a\\\\b'
+    # A template with a quote now passes the YAML-safety check (via the escape), where the old
+    # unescaped embedding would have failed.
+    assert P._is_yaml_safe('reply "yes" to <task_goes_here>')
+
+
+def test_ipi_output_keeps_quotes_without_the_yaml_check():
+    # IPI Arena places the text into JSON, so no YAML embedding check is applied.
+    out = P._extract_template_seq('[TEMPLATE_START] <task_goes_here> and say "x" [TEMPLATE_END]',
+                                  False, require_placeholder=True, yaml_safe=False)
+    assert out is not None and '"x"' in out
+
+
+def test_flat_content_of_none_is_empty_not_the_word_none():
+    assert P._flat_content(None) == ""
+
+
+def test_a_misconfigured_generator_stops_the_run(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import requests
+
+    from autopi.models.endpoints import EndpointConfigError
+
+    def missing_key(*args, **kwargs):
+        raise EndpointConfigError("set OPENAI_API_KEY for provider openai")
+
+    with pytest.raises(engine_mod.GeneratorUnavailableError, match="misconfigured"):
+        run_attack(_ScriptedAdapter(), _engine(monkeypatch, refiner=missing_key, max_sequences=3),
+                   verbose=False, logdir=tmp_path)
+    assert not list(tmp_path.rglob("*.json"))              # nothing logged; --resume will repeat it
+
+    def not_found(*args, **kwargs):
+        raise requests.HTTPError("404", response=SimpleNamespace(status_code=404))
+
+    with pytest.raises(engine_mod.GeneratorUnavailableError, match="misconfigured"):
+        run_attack(_ScriptedAdapter(), _engine(monkeypatch, refiner=not_found, max_sequences=3), verbose=False)
+
+
+def test_a_persistently_unreachable_target_stops_the_run(monkeypatch):
+    from autopi.harness.runner import TargetUnavailableError
+
+    class _AllInfra:
+        name = "mock"
+        checker_kind = "state"
+        default_seed_template = IMPORTANT_INSTRUCTIONS_SEED
+        default_seed_name = IMPORTANT_INSTRUCTIONS_SEED_NAME
+
+        def iter_points(self):
+            for i in range(14):
+                yield AttackPoint("s", f"user_task_{i}", "injection_task_0", "do my chore", "GOAL-123")
+
+        def run(self, point, injection_text):
+            raise AdapterInfraError("target down")
+
+    with pytest.raises(TargetUnavailableError, match="in a row"):
+        run_attack(_AllInfra(), _engine(monkeypatch, max_sequences=1), verbose=False)
+
+
+def test_an_empty_schedule_is_rejected_instead_of_reporting_zero_percent(monkeypatch):
+    monkeypatch.setattr(engine_mod, "query_refiner_llm", _stub_refiner)
+    with pytest.raises(ValueError, match="no attempts"):
+        TaxonomyEngine(awareness_mode=3, refiner_model="stub", use_judge=False, use_context=False,
+                       use_legitimize=False, use_seed=False, stack_only=2, stack_pool=1)
+
+
+def test_resumed_points_do_not_emit_a_dangling_point_start(monkeypatch, tmp_path):
+    from autopi.harness.journal import Journal
+
+    run_attack(_ScriptedAdapter(succeed_on={1}), _engine(monkeypatch, max_sequences=1),
+               verbose=False, logdir=tmp_path)
+    journal = Journal(tmp_path / "resume_traces")
+    run_attack(_ScriptedAdapter(succeed_on={1}), _engine(monkeypatch, max_sequences=1),
+               verbose=False, logdir=tmp_path, resume=True, journal=journal)
+    events = [json.loads(line)["event"] for line in journal.path.read_text().splitlines()] if journal.path.exists() else []
+    assert "point_start" not in events                     # a skipped scenario gets no point_start
+
+
+def test_journal_scrubs_a_custom_api_key_env_value(tmp_path, monkeypatch):
+    from autopi.harness.journal import Journal
+
+    monkeypatch.setenv("MY_CUSTOM_CRED", "supersecretvalue123")
+    journal = Journal(tmp_path, extra_secret_envs={"MY_CUSTOM_CRED"})
+    journal.emit("llm_error", error="request failed with key supersecretvalue123")
+    text = journal.path.read_text()
+    assert "supersecretvalue123" not in text and "<redacted>" in text
+
+
+def test_empty_target_thinking_env_does_not_override_the_alias(monkeypatch, tmp_path):
+    import autopi.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_build_adapter", lambda *a, **k: _ScriptedAdapter(succeed_on={1}))
+    monkeypatch.setattr(engine_mod, "query_refiner_llm", _stub_refiner)
+    monkeypatch.setenv("AUTOPI_TARGET_THINKING", "")
+    cfg = tmp_path / "models.yaml"
+    cfg.write_text('models:\n  t:\n    provider: openai-compatible\n    model: x\n'
+                   '    base_url: http://h/v1\n    thinking: "on"\n')
+    out = CliRunner().invoke(cli_main, ["run", "--benchmark", "agentdojo", "--target", "t",
+                                        "--models-config", str(cfg), "--no-judge", "--no-context",
+                                        "--no-legitimize", "--logdir", str(tmp_path)])
+    assert out.exit_code == 0, out.output
+    assert "target_thinking=on" in out.output             # the alias setting is kept, not forced off

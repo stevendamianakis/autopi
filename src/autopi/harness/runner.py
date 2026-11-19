@@ -21,6 +21,18 @@ from typing import Iterable
 from autopi.adapters.base import AdapterInfraError, AttackPoint, BenchmarkAdapter
 from autopi.core.engine import TaxonomyEngine
 
+# After this many consecutive scenarios whose every attempt failed in the infrastructure, the
+# run stops: the target is almost certainly down or misconfigured, and continuing would only
+# keep paying the generator for scenarios that can never be measured.
+_MAX_CONSECUTIVE_INFRA = 10
+
+
+class TargetUnavailableError(RuntimeError):
+    """The target could not be reached for many scenarios in a row. The run stops; the
+    infrastructure-only scenarios were not logged, so ``--resume`` runs them again."""
+
+    fatal = True
+
 
 @dataclass
 class PointOutcome:
@@ -145,12 +157,12 @@ def run_attack(
     summary = RunSummary(benchmark=adapter.name, awareness_mode=engine.awareness_mode,
                          stop_at_first_success=stop_at_first_success)
     pts = list(points) if points is not None else list(adapter.iter_points())
+    consecutive_infra = 0
 
     for point in pts:
         if journal:
             journal.context = {"suite": point.suite, "user_task": point.user_task_id,
                                "injection_task": point.injection_task_id}
-            journal.emit("point_start", budget=min(max_attempts or engine.attempt_budget, engine.attempt_budget))
         log_file = (
             logdir / "refiner_logs" / point.suite / f"{point.user_task_id}__{point.injection_task_id}.json"
             if logdir is not None else None
@@ -177,6 +189,8 @@ def run_attack(
                       f"(already done{note})")
             continue
 
+        if journal:
+            journal.emit("point_start", budget=min(max_attempts or engine.attempt_budget, engine.attempt_budget))
         engine.reset(point.user_task_prompt, point.injection_goal)
         succeeded = False
         attempts = 0
@@ -232,7 +246,13 @@ def run_attack(
             if verbose:
                 print(f"[infra] {adapter.name}/{point.suite}/{point.user_task_id}+{point.injection_task_id}: "
                       f"all {attempts} attempt(s) failed in the infrastructure; not logged, --resume runs it again")
+            consecutive_infra += 1
+            if consecutive_infra >= _MAX_CONSECUTIVE_INFRA:
+                raise TargetUnavailableError(
+                    f"the target failed every attempt of {consecutive_infra} scenarios in a row; stopping. "
+                    "Check the target endpoint, then rerun the same command with --resume to continue")
             continue
+        consecutive_infra = 0
 
         if logdir is not None:
             engine.save_template_log(logdir, point.suite, point.user_task_id, point.injection_task_id, succeeded,

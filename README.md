@@ -73,9 +73,9 @@ autopi run --benchmark agentdojo \
   --logdir runs/agentdojo-full
 ```
 
-Add `--dry-run` to check the settings and list the scenarios without calling a model. Each run writes
-its resolved settings and every attempt of every scenario to the `--logdir` folder. In the code, the
-generator is called the refiner.
+Add `--dry-run` to check the settings and count the scenarios without calling a model. A run with
+`--logdir` writes its resolved settings (a run manifest) and every attempt of every scenario to that
+folder. In the code, the generator is called the refiner.
 
 <details>
 <summary><b>Hosted models and per-role settings</b></summary>
@@ -137,15 +137,16 @@ ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy 
 
 ## Search strategies
 
-A strategy is an ordered list of blocks, an attempt budget per scenario and a stop rule. The three files
-in `configs/strategies/` are the paper's AutoPI-Full, AutoPI-Seed-Exploit and AutoPI-L1. They are
-examples, not limits:
+A strategy is an ordered list of blocks, an attempt budget per scenario and a stop rule.
+`configs/strategies/` holds the paper's AutoPI-Full, AutoPI-Seed-Exploit and AutoPI-L1, plus
+`repeated-phases.yaml` as a composition example. They are examples, not limits:
 
 | File | Blocks | Attempts | Goal |
 |---|---|---:|---|
 | `full.yaml` | seed, L1 sweep, 3 variants of each failed line | 529 | coverage |
 | `seed-exploit.yaml` | seed, 600 variants of the seed | 601 | ASR with a strong seed |
 | `l1.yaml` | seed, L1 sweep | 133 | low cost |
+| `repeated-phases.yaml` | seed and sweep blocks, repeated and reordered | 80 | illustration |
 
 ```yaml
 # configs/strategies/full.yaml

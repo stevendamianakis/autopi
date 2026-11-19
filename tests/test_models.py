@@ -299,3 +299,115 @@ def test_token_recovery_over_real_http_and_the_benchmark_tool_parser(tmp_path):
         server.shutdown()
         server.server_close()
         worker.join()
+
+
+# ── 0.2.5: endpoint validation, honored settings, reasoning stripping, placeholder signatures ──
+
+def test_prompted_tool_mode_is_rejected_for_hosted_providers():
+    # Prompted tools are parsed from text by AgentDojo's LocalLLM (an OpenAI-compatible client).
+    for provider, extra in [("anthropic", {}), ("google", {}), ("openai", {})]:
+        with pytest.raises(ValueError, match="prompted"):
+            ModelEndpoint(provider, "m", tool_mode="prompted", **extra)
+    # The providers that implement prompted tools accept it.
+    ModelEndpoint("openai-compatible", "m", "http://h/v1", tool_mode="prompted")
+    ModelEndpoint("ollama", "m", "http://h", tool_mode="prompted")
+
+
+def test_bare_local_spec_is_rejected_with_guidance():
+    with pytest.raises(ValueError, match="vllm:PORT:MODEL_ID"):
+        resolve_endpoint("local")
+    # The colon forms still route (Ollama / its model id), so only the ambiguous bare word fails.
+    assert resolve_endpoint("local:my-model").provider == "ollama"
+
+
+def _mock_openai_client(response):
+    create_calls = []
+
+    def create(**kwargs):
+        create_calls.append(kwargs)
+        return response
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    return client, create_calls
+
+
+def test_prompted_target_reply_has_its_reasoning_stripped_before_tool_parsing():
+    # A thinking target may write a hypothetical <function=...> inside <think>...</think>.
+    # AgentDojo's prompted parser reads message.content, so the reasoning must be removed first.
+    message = SimpleNamespace(content="<think>maybe <function=transfer>{}</function></think>FINAL", tool_calls=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    client, _ = _mock_openai_client(response)
+    instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1",
+                                                   tool_mode="prompted", thinking="on"))
+    out = client.chat.completions.create(model="m", messages=[])
+    assert out.choices[0].message.content == "FINAL"      # the <think> block (and its call) is gone
+
+
+def test_native_target_reply_is_left_untouched():
+    message = SimpleNamespace(content="plain answer", tool_calls=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    client, _ = _mock_openai_client(response)
+    instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1", tool_mode="native"))
+    out = client.chat.completions.create(model="m", messages=[])
+    assert out.choices[0].message.content == "plain answer"
+
+
+def test_google_openai_endpoint_adds_placeholder_signature_to_prefilled_tool_calls():
+    from autopi.models.clients import _GOOGLE_PLACEHOLDER_SIGNATURE
+    message = SimpleNamespace(content=None, tool_calls=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    client, calls = _mock_openai_client(response)
+    instrument_openai_client(client, ModelEndpoint("google", "gemini-x"))
+    prefilled = [{"role": "assistant", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+        {"id": "c2", "type": "function", "function": {"name": "g", "arguments": "{}"},
+         "extra_content": {"google": {"thought_signature": "REAL"}}}]}]
+    client.chat.completions.create(model="gemini-x", messages=prefilled)
+    sent = calls[0]["messages"][0]["tool_calls"]
+    assert sent[0]["extra_content"] == _GOOGLE_PLACEHOLDER_SIGNATURE      # unsigned call gets the placeholder
+    assert sent[1]["extra_content"] == {"google": {"thought_signature": "REAL"}}   # a real signature is kept
+
+
+def test_non_google_endpoint_adds_no_placeholder_signature():
+    message = SimpleNamespace(content=None, tool_calls=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    client, calls = _mock_openai_client(response)
+    instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1", tool_mode="native"))
+    client.chat.completions.create(model="m", messages=[{"role": "assistant", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}])
+    assert "extra_content" not in calls[0]["messages"][0]["tool_calls"][0]
+
+
+def test_ollama_generator_applies_extra_body_and_omit_parameters(monkeypatch):
+    sent = []
+    monkeypatch.setattr("autopi.models.clients.requests.post", lambda url, **kwargs: (
+        sent.append((url, kwargs["json"])),
+        SimpleNamespace(status_code=200, text="{}", raise_for_status=lambda: None,
+                        json=lambda: {"message": {"content": "ok"}}))[1])
+    endpoint = ModelEndpoint("ollama", "qwen3:8b", "http://127.0.0.1:11434",
+                             extra_body={"keep_alive": "5m"}, omit_parameters=["stream"])
+    assert query_endpoint(endpoint, "prompt") == "ok"
+    url, payload = sent[0]
+    assert url.endswith("/api/chat") and payload["keep_alive"] == "5m" and "stream" not in payload
+
+
+def test_manifest_records_the_anthropic_and_google_sdk_versions(tmp_path):
+    pytest.importorskip("anthropic")
+    pytest.importorskip("google.genai")
+    settings = {"models": {"target": ModelEndpoint("anthropic", "m").public_config()}}
+    save_run_manifest(tmp_path, settings)
+    versions = json.loads((tmp_path / "run_manifest.json").read_text())["versions"]
+    assert "anthropic" in versions and "google-genai" in versions
+
+
+def test_benchmark_data_digest_uses_the_full_scenario_set_not_the_task_selection():
+    from autopi.harness.manifest import benchmark_data_digest
+
+    full = {"a": {"objective": "x"}, "b": {"objective": "y"}}
+    selected = SimpleNamespace(_all_behaviors=full, _behaviors={"a": full["a"]})
+    whole = SimpleNamespace(_all_behaviors=full, _behaviors=full)
+    subset_only = SimpleNamespace(_behaviors={"a": full["a"]})
+    # The hash is over the full set, so narrowing with --user-task does not change it ...
+    assert benchmark_data_digest(selected) == benchmark_data_digest(whole)
+    # ... and it is not the hash of the selected subset (the pre-0.2.5 behaviour).
+    assert benchmark_data_digest(selected) != benchmark_data_digest(subset_only)

@@ -23,7 +23,10 @@ Changes relative to the bundled upstream revisions:
   in its own client.
 - AgentDojo `anthropic_llm.py`: construct message dictionaries directly instead
   of calling the SDK's `MessageParam` type alias, which is a union in current
-  Anthropic SDKs. Its test fixtures use the same representation.
+  Anthropic SDKs. Its test fixtures use the same representation. A
+  `redacted_thinking` content block is also converted back to an Anthropic
+  `redacted_thinking` block instead of raising, so a thinking target that returns
+  one does not crash on the following turn. Scoring is unchanged.
 - IPI Arena `behavior.py`: insert an empty tool result for unanswered
   prefilled tool calls and detect the actual image MIME type. Its data loader also locates scenario data inside installed wheels.
 - IPI Arena packaging: include scenario data in wheels and declare the optional

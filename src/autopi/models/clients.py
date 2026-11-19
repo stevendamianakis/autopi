@@ -56,6 +56,33 @@ def _with_tool_call_extras(messages, extras: OrderedDict):
     return out if changed else messages
 
 
+# Google's documented placeholder thought signature for a function-call part that the API did
+# not generate, such as a prefilled tool call in a benchmark conversation. Gemini 3 and later
+# otherwise reject the request (HTTP 400) for a missing current-turn signature. Google notes
+# this may reduce model performance; it is a last resort for calls with no real signature.
+_GOOGLE_PLACEHOLDER_SIGNATURE = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+
+
+def _with_placeholder_signatures(messages):
+    """For a Google OpenAI-compatible endpoint, add the placeholder signature to assistant tool
+    calls that still carry none (prefilled calls the API never produced a signature for)."""
+    if not isinstance(messages, list):
+        return messages
+
+    def needs(call):
+        return isinstance(call, dict) and not call.get("extra_content")
+
+    out, changed = [], False
+    for message in messages:
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if calls and any(needs(call) for call in calls):
+            message = dict(message, tool_calls=[
+                dict(call, extra_content=_GOOGLE_PLACEHOLDER_SIGNATURE) if needs(call) else call for call in calls])
+            changed = True
+        out.append(message)
+    return out if changed else messages
+
+
 def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, role="target"):
     """Apply settings to this client only, return provider tool-call fields (Gemini's thought
     signatures) with the calls they came with, and optionally recover prompted-tool text."""
@@ -90,6 +117,10 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
             kwargs.pop(key, None)
         if "messages" in kwargs:
             kwargs["messages"] = _with_tool_call_extras(kwargs["messages"], tool_call_extras)
+            if endpoint.provider == "google":
+                # IPI Arena prefills assistant tool calls the Gemini API never signed; add the
+                # documented placeholder so Gemini 3+ does not reject the request (HTTP 400).
+                kwargs["messages"] = _with_placeholder_signatures(kwargs["messages"])
         if decoder:
             kwargs = decoder.prepare(kwargs)
         call_id = uuid.uuid4().hex
@@ -108,6 +139,16 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                     choice.message.tool_calls = None
                 if journal:
                     journal.emit("llm_response_recovered", role=role, call_id=call_id, response=recovered)
+            elif endpoint.tool_mode == "prompted":
+                # AgentDojo's prompted parser (LocalLLM) scans message.content for
+                # ``<function=...>`` text. A thinking target emits a ``<think>...</think>``
+                # block first; strip it so a hypothetical call written inside the reasoning is
+                # not parsed as a real tool call. No-op when no reasoning delimiter is present,
+                # so a thinking-off target is unaffected. Matches IPI Arena's reply handling.
+                for choice in getattr(response, "choices", None) or []:
+                    message = getattr(choice, "message", None)
+                    if message is not None and getattr(message, "content", None):
+                        message.content = visible_text(message.content)
             return response
         except Exception as exc:
             if journal:
@@ -216,6 +257,11 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
                    "stream": False, "options": options}
         if endpoint.thinking != "server":
             payload["think"] = endpoint.thinking == "on"
+        if endpoint.extra_body:
+            payload.update(endpoint.extra_body)
+        for key_name in endpoint.omit_parameters:
+            payload.pop(key_name, None)
+            options.pop(key_name, None)
         key = endpoint.api_key()  # "EMPTY" when no api_key_env is configured
         call_id = uuid.uuid4().hex
         if journal:

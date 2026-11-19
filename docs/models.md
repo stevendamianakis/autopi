@@ -54,6 +54,32 @@ default to thinking off. Use `thinking: server` for endpoints that do not suppor
 the `chat_template_kwargs.enable_thinking` field. Hosted providers receive no
 template field by default. Token caps and thinking modes can change results.
 
+`tool_mode: prompted` is for `openai-compatible` and `ollama` endpoints only; it
+parses `<function=...>` text with AgentDojo's own parser. Hosted `anthropic`,
+`google` and `openai` targets use their native tool API and reject `prompted`.
+
+## Serving a vLLM target
+
+The two benchmarks need different server settings, so serve them separately (or
+restart between runs); do not point an AgentDojo prompted target and an IPI Arena
+native target at the same server.
+
+- **IPI Arena** sends native tool calls with `tool_choice: auto`, so the server
+  must parse tool calls: launch vLLM with `--enable-auto-tool-choice` and a
+  `--tool-call-parser` for the model (for example `hermes` for Qwen). Use
+  `tool_mode: native`.
+- **AgentDojo prompted target** expects the model's `<function=...>` text in
+  `message.content` and parses it itself. A server-side tool-call parser removes
+  that text, so an AgentDojo prompted target must run **without**
+  `--enable-auto-tool-choice`, or with raw-token recovery (below) to read the
+  generated tokens before the parser. A prompted target whose reply comes back
+  with the server's own parsed tool calls and no `<function=...>` text produces no
+  tool calls and silently scores zero; serve it without the tool-call parser.
+
+An AgentDojo prompted target also has its `<think>...</think>` reasoning removed
+from the reply before tool parsing, so a thinking model does not have a
+hypothetical call inside its reasoning executed.
+
 ## Recovering text removed by a server-side tool parser
 
 A vLLM server with a native tool parser can remove `<function=...>` text from

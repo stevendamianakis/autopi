@@ -108,7 +108,12 @@ class StrategyEngine(TaxonomyEngine):
                 seqs.sort(key=lambda seq: rank.get(seq["id"], len(rank)))
             level = block.get("level", 1)
             schedule, _ = build_combo_schedule(seqs, stack_only=level, stack_pool=block.get("pool_size"))
-            self._plans[block["id"]] = (schedule, min(schedule.size, block.get("limit", schedule.size)))
+            count = min(schedule.size, block.get("limit", schedule.size))
+            if count == 0:
+                raise ValueError(
+                    f"sweep block {block['id']!r} selects 0 combinations (level {level}); "
+                    "check its techniques, level and pool_size")
+            self._plans[block["id"]] = (schedule, count)
         self.use_seed = any(block["kind"] == "seed" for block in self.strategy_config["blocks"])
         if self.use_seed and "<task_goes_here>" not in self.seed_template:
             raise ValueError("the seed template must contain <task_goes_here>")

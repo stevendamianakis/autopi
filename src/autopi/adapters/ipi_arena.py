@@ -254,7 +254,9 @@ class IPIArenaAdapter:
         if max_steps is not None:
             kwargs["max_steps"] = max_steps
         self._runner = BenchmarkRunner(target_client, judge_client=judge_client, worldsim_client=worldsim_client, **kwargs)
-        self._behaviors = _select_behaviors(load_behaviors(behaviors_path), behaviors)
+        # The full scenario set (for the provenance hash), and the selection actually attacked.
+        self._all_behaviors = load_behaviors(behaviors_path)
+        self._behaviors = _select_behaviors(self._all_behaviors, behaviors)
         self._categories = set(categories) if categories else None
         known_categories = {b.get("category", "") for b in self._behaviors.values()}
         if self._categories and self._categories - known_categories:

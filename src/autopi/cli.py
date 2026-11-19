@@ -142,6 +142,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     from autopi.core.strategy import StrategyEngine, load_strategy
     from autopi.harness.journal import Journal
     from autopi.harness.manifest import benchmark_data_digest, save_run_manifest
+    from autopi.harness.runner import TargetUnavailableError
     from autopi.models.endpoints import load_model_catalog, override_endpoint, resolve_endpoint
 
     if num_shards < 1 or not 0 <= shard < num_shards:
@@ -170,7 +171,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         target_endpoint = resolve_endpoint(target, catalog)
         # Legacy vllm specs retain the paper's explicit thinking-off default. Named
         # model aliases retain their configured value unless a flag/env overrides it.
-        thinking_override = target_thinking or os.environ.get("AUTOPI_TARGET_THINKING")
+        thinking_override = target_thinking or (os.environ.get("AUTOPI_TARGET_THINKING") or None)
         if thinking_override is not None or target.startswith("vllm:"):
             target_thinking = resolve_target_thinking(thinking_override)
         else:
@@ -185,7 +186,10 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                                                  max_tokens=int(os.environ.get("VLLM_REFINER_MAX_TOKENS", "1024")))
         judge_endpoint = resolve_endpoint(judge or target, catalog)
         worldsim_endpoint = resolve_endpoint(worldsim or judge or target, catalog)
-        journal = Journal(trace_dir or Path(logdir) / "traces") if (trace_dir or logdir) and not dry_run else None
+        secret_envs = {ep.api_key_env for ep in (target_endpoint, refiner_endpoint, judge_endpoint, worldsim_endpoint)
+                       if ep.api_key_env}
+        journal = (Journal(trace_dir or Path(logdir) / "traces", extra_secret_envs=secret_envs)
+                   if (trace_dir or logdir) and not dry_run else None)
         adapter = _build_adapter(benchmark, target, judge, list(suites), list(user_tasks),
                                  list(injection_tasks), benchmark_version, defense,
                                  ipi_ignore_concealment=ipi_ignore_concealment,
@@ -212,6 +216,9 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                 use_seed=False if no_seed else None, sweep_before_seed_para=True if sweep_before_seed_para else None,
                 techniques=techniques, max_sequences=max_sequences, order=order, order_seed=order_seed,
                 stack_only=stack_only, stack_random=True if stack_random else None, stack_seed=stack_seed)
+        # AgentDojo embeds the injection in a double-quoted YAML scalar (quotes escaped at
+        # placement); IPI Arena places it in JSON, so quotes/backslashes are kept as written.
+        engine.yaml_safe_output = benchmark == "agentdojo"
         stop = not no_early_stop and (not strategy_data or strategy_data["stop"] == "first_success")
         points = list(adapter.iter_points())[shard::num_shards]
         if limit is not None:
@@ -246,14 +253,16 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                 "benchmark_data_sha256": benchmark_data_digest(adapter),
             }
             save_run_manifest(Path(logdir), settings)
+    except (ValueError, OSError) as exc:
+        # Configuration/setup problems are usage errors. A failure during the run itself
+        # (below) is not caught here, so a mid-run OSError is not mislabelled as a usage error.
+        raise click.UsageError(str(exc)) from exc
+    try:
         summary = run_attack(adapter, engine, logdir=logdir, max_attempts=max_attempts, points=points, resume=resume,
                              stop_at_first_success=stop, journal=journal)
-        click.echo("\n" + summary.format())
-    except GeneratorUnavailableError as exc:
-        raise click.ClickException(f"{exc}. The run stopped before this scenario was logged; "
-                                   "run the same command with --resume to continue.") from exc
-    except (ValueError, OSError) as exc:
-        raise click.UsageError(str(exc)) from exc
+    except (GeneratorUnavailableError, TargetUnavailableError) as exc:
+        raise click.ClickException(f"{exc}.") from exc
+    click.echo("\n" + summary.format())
 
 
 if __name__ == "__main__":

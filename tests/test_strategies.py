@@ -165,3 +165,12 @@ def test_cli_uses_strategy_stop_and_rejects_mixed_schedule_flags(monkeypatch, tm
     assert "in 3 attempt(s)" in result.output
     result = CliRunner().invoke(main, args + ["-k", "5"])
     assert result.exit_code == 2 and "conflicting flags" in result.output
+
+
+def test_a_sweep_block_selecting_zero_combinations_is_rejected():
+    # level 2 over a single technique yields no pairs; fail loudly instead of a silent 0%.
+    common = dict(refiner_model="stub", awareness_mode=3, use_judge=False, use_context=False, use_legitimize=False)
+    strategy = {"version": 1, "budget": 5, "stop": "first_success",
+                "blocks": [{"kind": "sweep", "id": "s", "level": 2, "techniques": ["F2.T5.S2"]}]}
+    with pytest.raises(ValueError, match="0 combinations"):
+        StrategyEngine(strategy, **common)

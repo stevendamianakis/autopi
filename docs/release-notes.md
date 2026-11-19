@@ -1,5 +1,28 @@
 # Release notes
 
+## Version 0.2.5
+
+A bug-fix release. IPI Arena's own scoring is unchanged, and so is AgentDojo's own
+execution and scoring (`run_task_with_pipeline`). One bundled AgentDojo source file
+changed (see [THIRD_PARTY.md](../THIRD_PARTY.md)).
+
+| Area | Fix |
+|---|---|
+| Anthropic AgentDojo target | The async client now disables HTTP keep-alive. AgentDojo runs each query in its own event loop on one reused client, so a kept-alive connection belonged to a closed loop and every request after the first was sent to the server twice. Each request is now sent once |
+| Generator configuration errors | A generator that is misconfigured rather than momentarily down (a missing API key or provider SDK, or HTTP 401/403/404) now stops the run before the scenario is logged, like an outage, so `--resume` repeats it. Before, it was skipped like an unusable answer, and the scenario was logged as a seed-only failure that `--resume` then kept. A plain HTTP 400 is still a skipped, per-prompt failure |
+| Unreachable target | A target that fails every attempt of many scenarios in a row now stops the run with a message and a `--resume` hint, instead of silently excluding every scenario and exiting 0 while still paying the generator |
+| Quotes in the payload | Generated templates and seeds keep double quotes and backslashes. The AgentDojo adapter escapes them for its double-quoted YAML slot at placement, and IPI Arena keeps them as written in JSON. Before, they were deleted from every benchmark, and a custom seed containing a quote failed AgentDojo's YAML parse on every attempt |
+| Thinking targets, prompted tools | An AgentDojo prompted target's reply has its `<think>...</think>` reasoning removed before the benchmark parses `<function=...>` tool calls, so a hypothetical call written inside the reasoning is not executed. No effect when the target does not think |
+| Truncated tool JSON | A native tool call whose JSON arguments were cut off (a token cap) is counted as a model crash against the budget instead of stopping the run |
+| Redacted thinking | A thinking Anthropic target that returns a `redacted_thinking` block no longer crashes on the next turn (bundled `anthropic_llm.py`) |
+| `tool_mode: prompted` | Rejected for hosted `anthropic`, `google` and `openai` endpoints, which have no prompted path; it is for `openai-compatible` and `ollama`. Before, it silently ran native, or sent tool-role messages the OpenAI API rejects |
+| Gemini on IPI Arena | A Google (OpenAI-compatible) target gets Google's documented placeholder thought signature on the prefilled tool calls the API never signed, so Gemini 3 and later do not reject the request (HTTP 400) |
+| Honoured endpoint settings | `extra_body` reaches Anthropic and Google native requests and the Ollama generator; `omit_parameters` is applied to Google requests and the Ollama generator. A bare `local` target spec is rejected with guidance instead of sending the model id `local` |
+| Empty schedule | A sweep that selects zero combinations (for example a level above the pool size, or a strategy sweep block with no matching combinations) is rejected instead of reporting 0% for every scenario |
+| Trace and provenance | A resumed scenario no longer writes a dangling `point_start`; the diagnostic judge sees an empty string, not the text `None`, for an empty reply; the trace scrubs a credential named by a custom `api_key_env`; the manifest records the `anthropic` and `google-genai` versions and hashes the full IPI Arena scenario set rather than one worker's selection |
+| Command line | A mid-run `OSError` is reported as itself, not as a usage error; an empty `AUTOPI_TARGET_THINKING` no longer forces a named target alias to thinking off |
+| Packaging | The undocumented, untested `replay.py` is removed, and the `agentdojo` install extra (which pulled a different PyPI version without the bundled patches) is dropped; install the bundled benchmark from `benchmarks/agentdojo` |
+
 ## Version 0.2.4
 
 A bug-fix release. IPI Arena's own scoring and the bundled benchmark sources are

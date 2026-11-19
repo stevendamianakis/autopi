@@ -35,15 +35,26 @@ _DECORATIVE_CHAR_PATTERN = re.compile(
     r"\U0001F300-\U0001FAFF]"
 )
 
+def yaml_escape(text: str) -> str:
+    """Escape ``text`` for embedding in a double-quoted YAML scalar, the form AgentDojo uses
+    for every injection slot (``some_field: "{injection_X}"``). Backslashes are doubled first,
+    then double quotes are escaped. Literal newlines are left as-is: the AgentDojo adapter
+    places this into a quoted scalar where they fold, and the sanitiser removes any ``---``
+    document-separator line that a folded newline would otherwise expose."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _is_yaml_safe(template: str) -> bool:
-    """Check that ``template`` (with placeholder filled) survives embedding in
-    the same context environment.yaml uses for injection vectors:
+    """Check that ``template`` (with placeholder filled, then YAML-escaped) survives embedding
+    in the same context environment.yaml uses for injection vectors:
 
         some_field: "...prefix {injection_X} suffix..."
 
-    Returns True iff a yaml.safe_load of that synthetic document succeeds.
+    Returns True iff a yaml.safe_load of that synthetic document succeeds. The escape matches
+    the one the AgentDojo adapter applies at placement, so quotes and backslashes are kept in
+    the payload instead of being deleted.
     """
-    filled = template.replace("<task_goes_here>", "\n\nTEST_TASK_GOAL\n\n")
+    filled = yaml_escape(template.replace("<task_goes_here>", "\n\nTEST_TASK_GOAL\n\n"))
     test_doc = f'key: "prefix {filled} suffix"'
     try:
         loaded = yaml.safe_load(test_doc)
@@ -52,14 +63,15 @@ def _is_yaml_safe(template: str) -> bool:
     return isinstance(loaded, dict) and "key" in loaded
 
 def _sanitize_template_seq(template: str, allow_unicode: bool) -> str:
-    """Sanitise a refiner-produced template for YAML embedding.
+    """Sanitise a refiner-produced template.
 
-    The hard invariants (dropping ``"`` and ``\\``, stripping YAML document
-    separators) always apply because the template is substituted into a
-    double-quoted YAML scalar. Decorative/Unicode stripping is skipped for
-    sequences whose technique legitimately needs non-ASCII characters.
+    Double quotes and backslashes are kept: the AgentDojo adapter escapes them for its
+    double-quoted YAML scalar at placement (:func:`yaml_escape`), and IPI Arena, which places
+    the text into JSON, needs no change. YAML document-separator lines are still removed,
+    because a folded newline could otherwise expose a ``---`` at column zero and break the
+    scalar. Decorative/Unicode stripping is skipped for sequences whose technique legitimately
+    needs non-ASCII characters.
     """
-    template = template.replace('"', "").replace("\\", "")
     if not allow_unicode:
         template = _DECORATIVE_CHAR_PATTERN.sub("", template)
     template = re.sub(r"^---", "", template, flags=re.MULTILINE)
@@ -95,6 +107,7 @@ def _extract_template_seq(
     allow_unicode: bool,
     *,
     require_placeholder: bool = True,
+    yaml_safe: bool = True,
 ) -> str | None:
     """Extract + validate a template from the refiner response (delimiter-based).
 
@@ -103,7 +116,9 @@ def _extract_template_seq(
     placeholder because the generated line must already contain the new task
     (or its faithful paraphrase). Returns None if extraction fails, the line is
     empty, or the mode-specific placeholder check or the YAML-safety round-trip
-    fails. The engine skips such an answer without a target call.
+    fails. The engine skips such an answer without a target call. ``yaml_safe``
+    runs the YAML embedding check for AgentDojo; a benchmark that places the text
+    outside YAML (IPI Arena, JSON) sets it False.
     """
     match = re.search(r"\[TEMPLATE_START\]\s*(.*?)\s*\[TEMPLATE_END\]", llm_response, re.DOTALL)
     if match:
@@ -127,7 +142,7 @@ def _extract_template_seq(
             return None
     elif "<task_goes_here>" in template:
         return None
-    if not _is_yaml_safe(template):
+    if yaml_safe and not _is_yaml_safe(template):
         return None
     return template
 
@@ -462,6 +477,8 @@ _MODE_PHRASE = {
 }
 
 def _flat_content(c) -> str:
+    if c is None:
+        return ""
     if isinstance(c, str):
         return c
     if isinstance(c, list):

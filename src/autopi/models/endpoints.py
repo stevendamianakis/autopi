@@ -8,6 +8,11 @@ from pathlib import Path
 import yaml
 
 
+class EndpointConfigError(ValueError):
+    """A model endpoint is misconfigured (e.g. a required API key is not set). Distinct from a
+    transient failure: it recurs on every request, so a run stops rather than skipping."""
+
+
 @dataclass(frozen=True)
 class ModelEndpoint:
     provider: str
@@ -47,6 +52,13 @@ class ModelEndpoint:
             raise ValueError("omit_parameters cannot remove the model, conversation or tool definitions")
         if self.tool_mode not in {"prompted", "native"}:
             raise ValueError("tool_mode must be prompted or native")
+        if self.tool_mode == "prompted" and self.provider not in {"openai-compatible", "ollama"}:
+            # Prompted tools are parsed from text by AgentDojo's LocalLLM, which talks an
+            # OpenAI-compatible chat API. A hosted anthropic/google/openai target uses that
+            # provider's native tool API, so `prompted` there would silently run native (or,
+            # for openai, send tool-role messages the API rejects). Fail fast instead.
+            raise ValueError("tool_mode: prompted is only for openai-compatible or ollama endpoints; "
+                             "hosted anthropic/google/openai targets use native tools")
         if self.thinking not in {"off", "on", "server"}:
             raise ValueError("thinking must be off, on, or server")
         if self.provider not in {"openai-compatible", "ollama"} and self.thinking != "server":
@@ -68,9 +80,9 @@ class ModelEndpoint:
         }.get(self.provider)
         value = os.environ.get(name, "") if name else ""
         if self.api_key_env and not value:
-            raise ValueError(f"set the {self.api_key_env} environment variable for this endpoint")
+            raise EndpointConfigError(f"set the {self.api_key_env} environment variable for this endpoint")
         if self.provider in {"openai", "anthropic", "google"} and not value:
-            raise ValueError(f"set {name} for provider {self.provider}")
+            raise EndpointConfigError(f"set {name} for provider {self.provider}")
         return value or "EMPTY"
 
     def public_config(self) -> dict:
@@ -124,6 +136,10 @@ def resolve_endpoint(spec: str, catalog: dict[str, ModelEndpoint] | None = None,
         return ModelEndpoint("ollama", spec.split(":", 1)[1],
                              os.environ.get("OLLAMA_BASE_URL", f"http://localhost:{os.environ.get('LOCAL_LLM_PORT', '11434')}"),
                              tool_mode="prompted")
+    if spec == "local":
+        # Bare "local" names no model and no port, so there is nothing to route to.
+        raise ValueError("'local' names no model; use vllm:PORT:MODEL_ID, local:MODEL_ID (Ollama), "
+                         "or a configured --models-config alias")
     for provider in ("openai", "anthropic", "google"):
         if spec.startswith(provider + ":"):
             return ModelEndpoint(provider, spec.split(":", 1)[1])

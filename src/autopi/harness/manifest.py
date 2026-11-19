@@ -25,7 +25,13 @@ def benchmark_data_digest(adapter) -> str:
     goals and default injection-vector contents of every suite at the adapter's benchmark
     version, so the value does not depend on which suites or tasks one worker selects.
     """
-    behaviors = getattr(adapter, "_behaviors", None)
+    # Hash the full scenario set the benchmark provides, not the subset one worker selected, so
+    # the digest is the same for every shard/task selection (IPI: all behaviors; AgentDojo: all
+    # suites of the version). ``_all_behaviors`` is the unfiltered IPI set; ``_behaviors`` is the
+    # selection, used only as a fallback for an adapter that does not expose the full set.
+    behaviors = getattr(adapter, "_all_behaviors", None)
+    if behaviors is None:
+        behaviors = getattr(adapter, "_behaviors", None)
     if behaviors is not None:
         payload = behaviors
     elif getattr(adapter, "benchmark_version", None) is not None and hasattr(adapter, "_suites"):
@@ -51,7 +57,8 @@ def save_run_manifest(logdir: Path, settings: dict):
     logdir.mkdir(parents=True, exist_ok=True)
     versions, sources = {}, {}
     modules = {"autopi": "autopi", "agentdojo": "agentdojo", "ipi_arena_bench": "ipi-arena-bench",
-               "openai": "openai", "tokenizers": "tokenizers"}
+               "openai": "openai", "anthropic": "anthropic", "google_genai": "google-genai",
+               "tokenizers": "tokenizers"}
     for module_name, distribution in modules.items():
         try:
             versions[distribution] = importlib.metadata.version(distribution)

@@ -136,7 +136,13 @@ class AgentDojoAdapter:
             slots = list(self._selectors[point.suite].get_injection_candidates(point.extra["_ut"]))
             if not slots:
                 raise AdapterInfraError("no_native_injection_slots")
-            injections = {slot: injection_text for slot in slots}
+            # AgentDojo substitutes each slot into a double-quoted YAML scalar
+            # (``field: "{slot}"``) and then parses the result, so escape the payload's quotes
+            # and backslashes. The target still sees the original text after YAML load; without
+            # this a quote in a seed or generated line would break the environment parse.
+            from autopi.core.prompts import yaml_escape
+
+            injections = {slot: yaml_escape(injection_text) for slot in slots}
             if self.journal:
                 self.journal.emit("injection_placement", slots=slots, injection_text=injection_text)
             with TraceLogger():
@@ -159,6 +165,8 @@ def _classify_infra_error(e: Exception) -> str | None:
     infra-failure kind (counted against the budget but kept out of the refiner's history).
     Errors of every provider client count (OpenAI, Anthropic, Google), also when AgentDojo's
     Anthropic client hands one over wrapped in tenacity's ``RetryError`` after its retries."""
+    import json
+
     import yaml
 
     if type(e).__module__.split(".")[0] == "tenacity":
@@ -168,6 +176,11 @@ def _classify_infra_error(e: Exception) -> str | None:
             return _classify_infra_error(inner)
     if isinstance(e, (TimeoutError, ConnectionError)):
         return "transport_error"
+    if isinstance(e, json.JSONDecodeError):
+        # A native tool call whose JSON arguments were cut off (e.g. a token cap) fails
+        # AgentDojo's own parser. Treat it as a model crash, not a blocked attack: count it
+        # against the budget and keep it out of the refiner's failed-template history.
+        return "model_crash"
     module = type(e).__module__
     if module.split(".")[0] in {"openai", "anthropic", "httpx", "requests"} or \
             module.startswith(("google.genai", "google.api_core")):

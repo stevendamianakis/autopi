@@ -68,6 +68,8 @@ def _content_block_to_anthropic_content_block(content_block: MessageContentBlock
             return ThinkingBlock(type="thinking", thinking=content_block["content"], signature=content_block["id"])
         case "thinking" if content_block["id"] is None:
             return RedactedThinkingBlock(type="redacted_thinking", data=content_block["content"])
+        case "redacted_thinking":
+            return RedactedThinkingBlock(type="redacted_thinking", data=content_block["content"])
         case _:
             raise ValueError("Invalid content type for Anthropic")
 

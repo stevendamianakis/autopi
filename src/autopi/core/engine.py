@@ -91,6 +91,15 @@ class GeneratorUnavailableError(RuntimeError):
     fatal = True
 
 
+def _http_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "code", None)
+    return status if isinstance(status, int) else None
+
+
 def _generator_unreachable(exc: BaseException) -> bool:
     """A connection failure, timeout, rate limit or server error: the generator is down, as
     opposed to an answer it returned that cannot be used (which is skipped)."""
@@ -99,12 +108,20 @@ def _generator_unreachable(exc: BaseException) -> bool:
     name = type(exc).__name__
     if "Connection" in name or "Timeout" in name:
         return True
-    status = getattr(exc, "status_code", None)
-    if not isinstance(status, int):
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    if not isinstance(status, int):
-        status = getattr(exc, "code", None)
-    return isinstance(status, int) and (status == 429 or status >= 500)
+    status = _http_status(exc)
+    return status is not None and (status == 429 or status >= 500)
+
+
+def _generator_misconfigured(exc: BaseException) -> bool:
+    """A configuration or authentication error rather than a transient one: a missing API key
+    or provider SDK, or HTTP 401/403/404. It recurs identically on every scenario, so the run
+    stops (before the scenario is logged) instead of recording seed-only failures that
+    ``--resume`` would then skip. A plain HTTP 400 stays a skipped, per-prompt failure."""
+    from autopi.models.endpoints import EndpointConfigError
+
+    if isinstance(exc, (EndpointConfigError, ImportError)):
+        return True
+    return _http_status(exc) in (401, 403, 404)
 
 
 class TaxonomyEngine:
@@ -118,6 +135,10 @@ class TaxonomyEngine:
 
     name = "taxonomy_refined"
     is_dos_attack = False
+    # AgentDojo embeds the injection in a double-quoted YAML scalar, so generated templates are
+    # checked for YAML-safe embedding. A benchmark that places the text outside YAML (IPI Arena)
+    # sets this False so quotes and backslashes are kept. The run sets it from the benchmark.
+    yaml_safe_output = True
 
     def __init__(
         self,
@@ -230,6 +251,12 @@ class TaxonomyEngine:
             if self.stack_only:
                 print(f"[TAXREFINER] STACK-ONLY L{self.stack_only}: sweeping only the {self.num_combos} "
                       f"{self.stack_only}-way combinations of the pool (no singles / other depths)")
+            if self.num_combos == 0 and not self.use_seed and self.seed_paraphrase_reps == 0:
+                # Without a seed and with an empty sweep there is nothing to try: the run would
+                # make zero target calls and report 0% for every scenario. Fail fast instead.
+                raise ValueError(
+                    "the schedule makes no attempts: the sweep selected 0 combinations and there is no "
+                    "seed. Widen --techniques/--max-sequences/--stack-pool, lower --stack-only, or add a seed")
             max_attempts = self.seed_paraphrase_reps + self.num_combos * (1 + paraphrase_reps)
 
         # ── inlined RefinedInstructionsAttack base state ──
@@ -379,10 +406,13 @@ class TaxonomyEngine:
         self._user_task_prompt = user_task_prompt or ""
         self.reset_for_new_task()
         if self._resume_pending:
-            if not self.use_seed or self.sweep_before_seed_para:
+            if (not self.use_seed or self.sweep_before_seed_para or self.seed_only
+                    or self.paraphrase_reps > 0):
                 raise NotImplementedError(
-                    "TAX_RESUME_AFTER_ATTEMPT assumes the default schedule (seed, seed paraphrases, "
-                    "sweep); it cannot be combined with use_seed=False or sweep_before_seed_para"
+                    "TAX_RESUME_AFTER_ATTEMPT only reconstructs the default schedule: a seed, optional "
+                    "seed paraphrases, then one taxonomy sweep with no exploitation (-k 0). It cannot be "
+                    "combined with use_seed=False, sweep_before_seed_para, seed_only or paraphrase_reps>0; "
+                    "use --resume to skip completed scenarios instead"
                 )
             self._restore_sweep_position(self._resume_after_attempt)
             self._resume_pending = False
@@ -476,11 +506,16 @@ class TaxonomyEngine:
         return "".join(parts)
 
     def _check_refiner_error(self, e: Exception) -> None:
-        """Stop on a generator that cannot be reached, in a strict run, or on a fatal error.
-        Any other failed request is skipped like an unusable answer."""
+        """Stop on a generator that cannot be reached or is misconfigured, in a strict run, or
+        on a fatal error. Any other failed request is skipped like an unusable answer."""
         if _generator_unreachable(e):
             raise GeneratorUnavailableError(
-                f"the generator could not be reached ({type(e).__name__}: {str(e)[:160]})") from e
+                f"the generator could not be reached ({type(e).__name__}: {str(e)[:160]}). The run "
+                "stopped before this scenario was logged; rerun the same command with --resume to continue") from e
+        if _generator_misconfigured(e):
+            raise GeneratorUnavailableError(
+                f"the generator is misconfigured ({type(e).__name__}: {str(e)[:160]}). Fix the model, key "
+                "or SDK (it would fail the same way on every scenario), then rerun with --resume to continue") from e
         if self.strict_refiner or getattr(e, "fatal", False):
             raise RuntimeError("Taxonomy judge/refiner request failed") from e
 
@@ -563,6 +598,7 @@ class TaxonomyEngine:
                 response,
                 _combo_allows_unicode(combo),
                 require_placeholder=not self.newtask_aware,
+                yaml_safe=self.yaml_safe_output,
             )
             if template is not None:
                 return template
@@ -598,6 +634,7 @@ class TaxonomyEngine:
                 response,
                 _combo_allows_unicode(seqs) if seqs else False,
                 require_placeholder=not self.newtask_aware,
+                yaml_safe=self.yaml_safe_output,
             )
             if template is not None:
                 return template

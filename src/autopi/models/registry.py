@@ -153,11 +153,18 @@ def build_target_pipeline(
         llm.name = endpoint.model
     elif endpoint.provider == "anthropic":
         import anthropic
+        import httpx2
         from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
         # AgentDojo's Anthropic element streams through an async client (it copies a sync
         # client into a new one), so the settings and the trace are applied to that call.
-        client = anthropic.AsyncAnthropic(api_key=endpoint.api_key(), timeout=endpoint.timeout,
-                                          max_retries=endpoint.retries,
+        # AgentDojo runs each query in its own event loop (``asyncio.run``) on this one client.
+        # A kept-alive connection then belongs to a closed loop, and the SDK sends the next
+        # request twice (once on the stale connection, once on a fresh one). Disabling HTTP
+        # keep-alive makes every request open its own connection, so each is sent once.
+        http_client = anthropic.DefaultAsyncHttpxClient(
+            timeout=endpoint.timeout, limits=httpx2.Limits(max_keepalive_connections=0))
+        client = anthropic.AsyncAnthropic(api_key=endpoint.api_key(), max_retries=endpoint.retries,
+                                          http_client=http_client,
                                           **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
         _instrument_anthropic(client.messages, endpoint, journal)
         llm = AnthropicLLM(client, endpoint.model)
@@ -196,6 +203,9 @@ def _instrument_anthropic(messages, endpoint, journal):
             kwargs.pop(key, None)
         if endpoint.max_tokens is not None:
             kwargs["max_tokens"] = endpoint.max_tokens
+        if endpoint.extra_body:
+            # Passthrough for Anthropic-only request fields, e.g. enabling extended thinking.
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **endpoint.extra_body}
         for key in endpoint.omit_parameters:
             kwargs.pop(key, None)
         if journal:
@@ -307,6 +317,11 @@ def _instrument_google(resource, endpoint, journal):
         updates = {key: value for key, value in {
             "temperature": endpoint.temperature, "top_p": endpoint.top_p,
             "max_output_tokens": endpoint.max_tokens}.items() if value is not None}
+        if endpoint.extra_body:
+            # Extra GenerateContentConfig fields (e.g. thinking_config) for Google native calls.
+            updates.update(endpoint.extra_body)
+        for key in endpoint.omit_parameters:
+            updates.pop(key, None)
         config = kwargs.get("config")
         if updates:
             kwargs["config"] = config.model_copy(update=updates) if hasattr(config, "model_copy") else {**(config or {}), **updates}
