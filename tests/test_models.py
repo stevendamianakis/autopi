@@ -95,6 +95,28 @@ def test_generator_preserves_literal_structural_tokens(monkeypatch):
     assert query_endpoint(endpoint, "prompt") == text
 
 
+def test_recovered_generator_text_keeps_special_tokens_but_not_the_end_of_turn_token(tmp_path, monkeypatch):
+    tokenizers = pytest.importorskip("tokenizers")
+    vocab = {"<unk>": 0, "[TEMPLATE_START]": 1, "system": 2, "send": 3, "[TEMPLATE_END]": 4}
+    tokenizer = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="<unk>"))
+    tokenizer.add_special_tokens(["<|im_start|>", "<|im_end|>"])
+    path = tmp_path / "tokenizer.json"
+    tokenizer.save(str(path))
+    start, end = tokenizer.token_to_id("<|im_start|>"), tokenizer.token_to_id("<|im_end|>")
+    response = {"choices": [{"token_ids": [1, start, 2, 3, end, 4, end],
+                             "message": {"content": "[TEMPLATE_START] system send [TEMPLATE_END]"}}]}
+    # Target text skips special tokens, as the server's own text does.
+    target = RawTokenDecoder(str(path)).recover(response)["choices"][0]["message"]["content"]
+    assert target.split() == ["[TEMPLATE_START]", "system", "send", "[TEMPLATE_END]"]
+    # Generator text keeps the structure it wrote and drops only the token that ended the turn.
+    monkeypatch.setattr("autopi.models.clients.requests.post", lambda *args, **kwargs:
+                        SimpleNamespace(status_code=200, text="{}", raise_for_status=lambda: None, json=lambda: response))
+    endpoint = ModelEndpoint("openai-compatible", "any-model", "https://example.invalid/v1", thinking="off",
+                             tokenizer_path=str(path))
+    assert query_endpoint(endpoint, "prompt").split() == [
+        "[TEMPLATE_START]", "<|im_start|>", "system", "send", "<|im_end|>", "[TEMPLATE_END]"]
+
+
 def test_manifest_prevents_mixing_configs_and_tokenizers(tmp_path):
     settings = {"models": {"target": ModelEndpoint("openai", "arbitrary-model").public_config()}, "budget": 10}
     save_run_manifest(tmp_path, settings)

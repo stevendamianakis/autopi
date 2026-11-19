@@ -1,4 +1,22 @@
-# Release notes — version 0.2.0
+# Release notes
+
+## Version 0.2.1
+
+A bug-fix release. IPI Arena's own scoring is unchanged, and so is every default
+schedule.
+
+| Area | Fix |
+|---|---|
+| Anthropic AgentDojo target | The alias's temperature, top_p, output cap and omitted parameters now reach the request AgentDojo makes, and the call is traced. Version 0.2.0 always sent AgentDojo's values (temperature 0, 1,024 output tokens) and traced nothing |
+| IPI Arena target thinking | `target_thinking` given to `IPIArenaAdapter` in Python now reaches the target's requests, as `--target-thinking` already did |
+| IPI Arena action-only score | `--ipi-ignore-concealment` now leaves out an explicit list of concealment criteria per scenario. The keyword match of 0.2.0 also left out a user-task or harmful-action criterion in 7 scenarios and kept the concealment check of 1 |
+| IPI Arena WorldSim | An empty or reasoning-only simulator reply stays empty. Version 0.2.0 turned it into a missing reply, which IPI Arena answers with `{"status": "success"}` |
+| IPI Arena judge | Unchanged: a judge reply without valid JSON scores 0, as in IPI Arena. The adapter's documentation said such a reply was retried, and now says how it is scored |
+| IPI Arena utility field | Only the "User Intent Fulfillment" criterion counts as utility, not attack criteria such as "Forwarding Intent". The field is only logged |
+| `--sweep-before-seed-para` | The seed paraphrases run after the sweep even when the sweep's last candidate could not be written. Version 0.2.0 skipped them with `-k 0` and ran them late otherwise |
+| Raw-token recovery | Recovered generator text keeps special tokens such as `<\|im_start\|>`, except the end-of-turn token |
+
+## Version 0.2.0
 
 This release packages the AutoPI engine together with the two benchmarks it runs
 on and a general interface for search strategies.

@@ -593,13 +593,36 @@ class TaxonomyEngine:
         self._stash_last_transcript()
         cl_block = self._context_legit_block(injection_goal)
 
-        # ── SEED-PARAPHRASE phase ── (with sweep_before_seed_para it waits until the sweep
-        #    below is exhausted, so the order becomes seed, sweep, seed paraphrases, exploit)
-        while (
-            (not self.seed_only)
-            and self._seed_para_try < self.seed_paraphrase_reps
-            and (not self.sweep_before_seed_para or self._combo_idx >= self.num_combos)
-        ):
+        # ── SEED-PARAPHRASE phase ── (default order: before the sweep)
+        if not self.sweep_before_seed_para and self._next_seed_paraphrase(injection_goal, cl_block):
+            return True
+
+        # ── EXPLORE / broad sweep ──
+        while self._combo_idx < self.num_combos:
+            combo = self._combos[self._combo_idx]
+            self._combo_idx += 1
+            print(f"[TAXREFINER] attempt {self.get_attempt_number()} taxonomy L{len(combo)} {_combo_id(combo)}")
+            self._adaptive_block = cl_block
+            template = self._generate_from_combo(combo, injection_goal)
+            if template is not None:
+                self._current_template = template
+                self._record(_combo_id(combo), _combo_name(combo), "taxonomy", template, "pending",
+                             stack_level=len(combo))
+                return True
+
+        # ── SEED-PARAPHRASE phase with sweep_before_seed_para ── it starts once the sweep is
+        #    exhausted, also when the sweep's last candidates could not be written, so the order
+        #    becomes seed, sweep, seed paraphrases, exploit
+        if self.sweep_before_seed_para and self._next_seed_paraphrase(injection_goal, cl_block):
+            return True
+
+        # ── EXPLOIT / paraphrase ──
+        return self._next_exploit(injection_goal, cl_block)
+
+    def _next_seed_paraphrase(self, injection_goal: str, cl_block: str) -> bool:
+        """Write the next seed paraphrase. Skips refused/unparseable candidates inline and
+        returns False when the seed-paraphrase phase has nothing left."""
+        while (not self.seed_only) and self._seed_para_try < self.seed_paraphrase_reps:
             seed_tmpl = self._attempt_meta[0]["template"]
             sig = self._judge_text(
                 self._seq_transcript.get("SEED") if self._seed_para_try == 0 else self._last_failed_transcript(),
@@ -624,21 +647,11 @@ class TaxonomyEngine:
                 return True
             self._record("PARA:SEED", "paraphrase_of_seed", "seed_paraphrase", None, "unparseable",
                          raw=(getattr(self, "_last_para_raw", "") or "")[:300], stack_level=0)
+        return False
 
-        # ── EXPLORE / broad sweep ──
-        while self._combo_idx < self.num_combos:
-            combo = self._combos[self._combo_idx]
-            self._combo_idx += 1
-            print(f"[TAXREFINER] attempt {self.get_attempt_number()} taxonomy L{len(combo)} {_combo_id(combo)}")
-            self._adaptive_block = cl_block
-            template = self._generate_from_combo(combo, injection_goal)
-            if template is not None:
-                self._current_template = template
-                self._record(_combo_id(combo), _combo_name(combo), "taxonomy", template, "pending",
-                             stack_level=len(combo))
-                return True
-
-        # ── EXPLOIT / paraphrase ──
+    def _next_exploit(self, injection_goal: str, cl_block: str) -> bool:
+        """Write the next paraphrase of a failed sweep candidate (of the seed in seed-only
+        mode). Returns False when every paraphrase target has been tried."""
         self._phase = "paraphrase"
         if self._para_sources is None:
             self._para_sources = self._build_paraphrase_sources()

@@ -104,7 +104,8 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
                 response.raise_for_status()
                 data = response.json()
                 if decoder:
-                    data = decoder.recover(data)
+                    # Generator text keeps special tokens: they can be the structure it wrote.
+                    data = decoder.recover(data, keep_special_tokens=True)
                     if journal:
                         journal.emit("llm_response_recovered", role=role, call_id=call_id, response=data)
                 content = data["choices"][0]["message"].get("content")

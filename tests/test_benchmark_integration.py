@@ -61,6 +61,63 @@ def test_native_anthropic_message_conversion_works_with_current_sdk_types():
     assert messages[0]["role"] == "user" and messages[0]["content"][0].text == "User message"
 
 
+def test_anthropic_target_settings_and_trace_reach_the_call_agentdojo_makes(monkeypatch, tmp_path):
+    """AgentDojo's Anthropic element streams through an async client. The endpoint's settings
+    must reach that call, unset ones keep AgentDojo's values, and the call is traced."""
+    pytest.importorskip("agentdojo")
+    pytest.importorskip("anthropic")
+    import json
+
+    from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
+    from agentdojo.functions_runtime import FunctionsRuntime
+    from anthropic.resources.messages.messages import AsyncMessages
+    from anthropic.types import Message, TextBlock, Usage
+
+    from autopi.harness.journal import Journal
+    from autopi.models.endpoints import ModelEndpoint
+    from autopi.models.registry import build_target_pipeline
+
+    sent = []
+
+    class _Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get_final_message(self):
+            return Message(id="msg", type="message", role="assistant", model="any-model", stop_reason="end_turn",
+                           stop_sequence=None, content=[TextBlock(type="text", text="done")],
+                           usage=Usage(input_tokens=1, output_tokens=1))
+
+    def stream(self, **kwargs):
+        sent.append(kwargs)
+        return _Stream()
+
+    monkeypatch.setattr(AsyncMessages, "stream", stream)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-value")
+    journal = Journal(tmp_path)
+
+    def request(**settings):
+        endpoint = ModelEndpoint("anthropic", "any-model", **settings)
+        pipeline = build_target_pipeline("anthropic:any-model", endpoint=endpoint, journal=journal)
+        llm = next(element for element in pipeline.elements if isinstance(element, AnthropicLLM))
+        llm.query("hi", FunctionsRuntime([]), messages=[
+            {"role": "system", "content": [{"type": "text", "content": "System message"}]},
+            {"role": "user", "content": [{"type": "text", "content": "hi"}]},
+        ])
+        return sent[-1]
+
+    configured = request(temperature=0.7, top_p=0.9, max_tokens=7777)
+    assert (configured["temperature"], configured["top_p"], configured["max_tokens"]) == (0.7, 0.9, 7777)
+    defaults = request()
+    assert (defaults["temperature"], defaults["max_tokens"]) == (0.0, 1024) and "top_p" not in defaults
+    assert "temperature" not in request(omit_parameters=("temperature",))
+    events = [json.loads(line)["event"] for line in journal.path.read_text().splitlines()]
+    assert events.count("llm_request") == events.count("llm_response_original") == 3
+
+
 def test_all_ipi_scenarios_and_server_conversion_fixes_are_bundled():
     pytest.importorskip("ipi_arena_bench")
     from ipi_arena_bench.behavior import _detect_image_media_type, convert_anthropic_to_openai, load_behaviors

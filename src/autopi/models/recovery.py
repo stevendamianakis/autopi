@@ -32,6 +32,8 @@ class RawTokenDecoder:
         path = Path(tokenizer_path)
         self.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
         self.tokenizer = Tokenizer.from_file(str(path))
+        self.special_ids = {index for index, token in self.tokenizer.get_added_tokens_decoder().items()
+                            if token.special}
 
     def prepare(self, payload: dict) -> dict:
         payload = copy.deepcopy(payload)
@@ -47,7 +49,13 @@ class RawTokenDecoder:
             payload["return_token_ids"] = True
         return payload
 
-    def recover(self, response: dict) -> dict:
+    def recover(self, response: dict, *, keep_special_tokens: bool = False) -> dict:
+        """Replace each choice's text with its decoded generated tokens.
+
+        By default special tokens are skipped, as a vLLM server does in its own text. With
+        ``keep_special_tokens`` (generator output) a special token such as ``<|im_start|>``
+        stays in the text, since a structural injection can be made of it; only trailing
+        special tokens, the end-of-turn token that stopped generation, are dropped."""
         result = copy.deepcopy(response)
         choices = result.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -59,7 +67,14 @@ class RawTokenDecoder:
             if not isinstance(choice.get("message"), dict):
                 raise ResponseRecoveryError("endpoint returned no message")
             try:
-                choice["message"]["content"] = self.tokenizer.decode(ids, skip_special_tokens=True)
+                if keep_special_tokens:
+                    special, end = getattr(self, "special_ids", set()), len(ids)
+                    while end and ids[end - 1] in special:
+                        end -= 1
+                    text = self.tokenizer.decode(ids[:end], skip_special_tokens=False)
+                else:
+                    text = self.tokenizer.decode(ids, skip_special_tokens=True)
+                choice["message"]["content"] = text
             except Exception as exc:
                 raise ResponseRecoveryError(f"cannot decode generated tokens: {exc}") from exc
             choice["message"]["tool_calls"] = None

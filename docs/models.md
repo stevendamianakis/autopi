@@ -27,7 +27,9 @@ endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
 it defaults to the target. `--worldsim` is its tool simulator and defaults to
 the benchmark judge. These have independent model aliases and URLs.
 
-Hosted AgentDojo targets use the benchmark's native provider clients. IPI Arena
+Hosted AgentDojo targets use the benchmark's native provider clients. Decoding
+fields an alias leaves unset keep that client's defaults: AgentDojo's Anthropic
+client sends temperature 0 and allows 1,024 output tokens. IPI Arena
 uses native tools via the provider's OpenAI-compatible API. Provider compatibility
 layers may differ from native APIs; record the interface in your results.
 See the official [Claude compatibility documentation](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
@@ -48,7 +50,10 @@ A vLLM server with a native tool parser can remove `<function=...>` text from
 `message.content`, even when AgentDojo expects to parse that text itself. With
 recovery enabled, AutoPI requests `return_token_ids: true` and decodes the
 generated token ids with the exact served tokenizer before normal template,
-judge or prompted-tool parsing.
+judge or prompted-tool parsing. Generator and diagnostic-judge text keeps special
+tokens such as `<|im_start|>`, since a structural injection can be written with
+them, and drops only the end-of-turn token that stopped generation. Target text
+skips special tokens, as the server's own text does.
 
 To enable it, set `tokenizer_path` for the affected model alias,
 or pass `--target-tokenizer FILE` / `--refiner-tokenizer FILE`. Install the

@@ -1,8 +1,8 @@
-# Release validation — November 18, 2026
+# Release validation — version 0.2.1, November 18, 2026
 
 Validated locally on Python 3.11.18, macOS arm64.
 
-- **170 tests passed**, covering AutoPI and both bundled benchmark test suites.
+- **176 tests passed**, covering AutoPI and both bundled benchmark test suites.
   The AutoPI tests also passed on Python 3.13.16 against the built wheels.
 - The lint check passed on the source and the tests.
 - Offline AgentDojo checks compared the adapter's selected slots and native
@@ -14,7 +14,8 @@ Validated locally on Python 3.11.18, macOS arm64.
   combination limits, histories, failures and stopping rules were checked.
 - A local HTTP test exercised real OpenAI-compatible clients and the benchmark's
   prompted-tool parser with recovered token text. Missing token ids are rejected;
-  generator output preserves literal structural tokens.
+  generator output preserves structural tokens, including special tokens
+  recovered from token ids.
 - Source distributions and wheels built successfully. The AutoPI source archive
   includes both benchmark trees; its wheel includes the taxonomy. The IPI wheel
   includes all 41 scenario files.
@@ -22,7 +23,14 @@ Validated locally on Python 3.11.18, macOS arm64.
   imports and successfully loaded all benchmark/taxonomy data. Both installed
   CLIs passed model-free setup validation.
 - OpenAI, Anthropic and Google AgentDojo pipelines were constructed with arbitrary
-  model ids and dummy credentials without contacting model endpoints.
+  model ids and dummy credentials without contacting model endpoints. The
+  Anthropic target also ran through AgentDojo's own streaming call with an
+  offline stub: configured decoding settings reach the request and the call is
+  traced.
+- IPI Arena attempts were checked against the benchmark's own scoring rules: an
+  unusable judge reply scores 0, and only a missing WorldSim reply becomes
+  `{"status": "success"}`. The action-only score was checked against an explicit
+  list of the concealment criteria of all 41 scenarios.
 - The publication folder was scanned for the workspace's private paths, server
   addresses, private keys and credential patterns. No such values were found.
 

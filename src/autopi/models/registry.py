@@ -151,10 +151,12 @@ def build_target_pipeline(
     elif endpoint.provider == "anthropic":
         import anthropic
         from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
-        client = anthropic.Anthropic(api_key=endpoint.api_key(), timeout=endpoint.timeout,
-                                     max_retries=endpoint.retries,
-                                     **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
-        _instrument_native(client.messages, "create", endpoint, journal)
+        # AgentDojo's Anthropic element streams through an async client (it copies a sync
+        # client into a new one), so the settings and the trace are applied to that call.
+        client = anthropic.AsyncAnthropic(api_key=endpoint.api_key(), timeout=endpoint.timeout,
+                                          max_retries=endpoint.retries,
+                                          **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
+        _instrument_anthropic(client.messages, endpoint, journal)
         llm = AnthropicLLM(client, endpoint.model)
         llm.name = endpoint.model
     elif endpoint.provider == "google":
@@ -175,10 +177,13 @@ def build_target_pipeline(
     ))
 
 
-def _instrument_native(resource, method, endpoint, journal):
-    original = getattr(resource, method)
+def _instrument_anthropic(messages, endpoint, journal):
+    """Apply the endpoint's decoding settings to ``messages.stream`` of an async Anthropic
+    client, the call AgentDojo makes, and trace the request and the final message. Unset
+    fields keep AgentDojo's own values (temperature 0, 1,024 output tokens)."""
+    original = messages.stream
 
-    def call(*args, **kwargs):
+    def stream(*args, **kwargs):
         for key in ("temperature", "top_p", "max_tokens"):
             value = getattr(endpoint, key)
             if value is not None:
@@ -187,12 +192,45 @@ def _instrument_native(resource, method, endpoint, journal):
             kwargs.pop(key, None)
         if journal:
             journal.emit("llm_request", role="target", request=kwargs)
-        result = original(*args, **kwargs)
-        if journal:
-            journal.emit("llm_response_original", role="target", response=result)
-        return result
+        return _TracedAnthropicStream(original(*args, **kwargs), journal)
 
-    setattr(resource, method, call)
+    messages.stream = stream
+
+
+class _TracedAnthropicStream:
+    """The async context manager returned by ``messages.stream``, with the final message
+    (or the error) written to the trace."""
+
+    def __init__(self, manager, journal):
+        self._manager, self._journal, self._stream = manager, journal, None
+
+    def _error(self, exc):
+        if self._journal:
+            self._journal.emit("llm_error", role="target", error_type=type(exc).__name__, error=str(exc))
+
+    async def __aenter__(self):
+        try:
+            self._stream = await self._manager.__aenter__()
+        except Exception as exc:
+            self._error(exc)
+            raise
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return await self._manager.__aexit__(*exc_info)
+
+    async def get_final_message(self):
+        try:
+            message = await self._stream.get_final_message()
+        except Exception as exc:
+            self._error(exc)
+            raise
+        if self._journal:
+            self._journal.emit("llm_response_original", role="target", response=message)
+        return message
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 def _instrument_google(resource, endpoint, journal):
