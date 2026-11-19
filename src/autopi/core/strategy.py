@@ -141,6 +141,8 @@ class StrategyEngine(TaxonomyEngine):
         self.has_candidate = next(self._iterator, False)
 
     def refine_template(self, injection_goal):
+        if self.generation_stop_reason:
+            return False
         return next(self._iterator, False)
 
     def _new_source(self, template, combo, block, record):
@@ -158,6 +160,8 @@ class StrategyEngine(TaxonomyEngine):
 
     def _exploit(self, source, reps, goal, seed=False):
         for _ in range(reps):
+            if self.generation_stop_reason:
+                return
             feedback = self._judge_text(source["messages"] if source["last_security"] is False else [], goal)
             if feedback and (not source["signals"] or feedback != source["signals"][-1]):
                 source["signals"].append(feedback)
@@ -183,6 +187,8 @@ class StrategyEngine(TaxonomyEngine):
 
     def _candidates(self, goal):
         for block in self.strategy_config["blocks"]:
+            if self.generation_stop_reason:
+                return
             self._block_id = block["id"]
             kind = block["kind"]
             if kind == "seed":
@@ -197,6 +203,8 @@ class StrategyEngine(TaxonomyEngine):
                 # A large sweep (level 20 without a limit) can hold more combinations than an
                 # index can count; the budget ends the run long before that bound.
                 for combo in islice(schedule, min(count, sys.maxsize)):
+                    if self.generation_stop_reason:
+                        return
                     self._adaptive_block = self._context_legit_block(goal)
                     template = self._generate_from_combo(combo, goal)
                     if template is None:
@@ -215,4 +223,6 @@ class StrategyEngine(TaxonomyEngine):
                            and source["record"]["status"] == "failed"
                            and (not block.get("source") or source["block"] == block["source"])]
                 for source in sources:
+                    if self.generation_stop_reason:
+                        return
                     yield from self._exploit(source, block["reps"], goal)

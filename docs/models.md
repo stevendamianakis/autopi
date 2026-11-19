@@ -33,7 +33,9 @@ anthropic SDK 2.x sends (2026-10-21) rejects `temperature`, `top_p` and `top_k`
 on every model, so an `anthropic` alias cannot set them and requests use the
 API's default sampling. An Anthropic AgentDojo target allows 1,024 output tokens
 unless its alias sets `max_tokens`; for a model that thinks by default, the
-thinking counts toward that cap. IPI Arena
+thinking counts toward that cap. Its HTTP client also supports older Anthropic
+SDKs that use `httpx` rather than `httpx2`, retaining disabled HTTP keep-alive.
+IPI Arena
 uses native tools via the provider's OpenAI-compatible API. Its client sends
 temperature 0 on every target, judge and WorldSim call; Claude 4.7 and later reject
 a temperature below 1 there, so for an `anthropic` endpoint AutoPI leaves sampling
@@ -107,6 +109,10 @@ support returning token ids in each choice. Missing/invalid ids, and ids outside
 the tokenizer's vocabulary, cause an error;
 AutoPI never falls back to the stripped text or invents tool arguments. Original
 responses and recovered text are saved when tracing is enabled.
+
+Missing, unreadable or invalid tokenizer files are configuration errors. The CLI
+checks the generator tokenizer at setup, with or without logging. Through Python,
+loading a bad generator tokenizer stops the run before the scenario is logged.
 
 Recovery is opt-in because it is not a standard OpenAI API feature and requires
 the correct tokenizer. Ordinary endpoints use their visible text. **Do not apply

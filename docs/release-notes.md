@@ -1,5 +1,25 @@
 # Release notes
 
+## Version 0.2.8
+
+Four fixes in AutoPI. No bundled benchmark files changed, including AgentDojo's
+scoring and validation and IPI Arena's simulator and scoring. Mode 3, the paper's
+setting, retains the diagnostic judge's free-text explanation.
+
+| Area | Fix |
+|---|---|
+| Generator failures | Requests' SSL and proxy failures stop the run as unreachable-generator errors. Missing, unreadable or invalid tokenizer files are configuration errors; the CLI checks the generator tokenizer during setup even without `--logdir`. After 3 consecutive unexpected request errors from either the generator or its diagnostic judge, the run stops before logging the current scenario, so `--resume` repeats it. Each role has its own error streak, retained across scenarios and cleared by a successful request. HTTP 400 remains a skippable per-prompt rejection |
+| Goal-blind modes | Modes 1 and 2 pass only a recognized, fixed failure-category phrase to the generator. The goal-aware judge's free-text explanation is withheld because it can quote the hidden goal. Mode 3 keeps that explanation as before |
+| Unusable generation limit | Both scheduling interfaces end the current scenario after 200 consecutive unusable generated candidates. This includes sweep lines and seed/sweep variants, across repeated blocks. Each candidate can use the existing two prompt tiers. A usable generated candidate resets the streak, and a new scenario starts with a fresh streak. Skipped candidates consume no target attempts. Logs and summaries record the stop reason. The limit exceeds the full 132-unit L1 sweep |
+| Older Anthropic SDKs | AgentDojo target construction falls back to `httpx.Limits` when `httpx2` is unavailable, preserving disabled HTTP keep-alive for the older SDKs allowed by the dependency declarations |
+
+The positive integer environment variables `TAX_MAX_CONSECUTIVE_REFINER_ERRORS`
+(default 3) and `TAX_MAX_CONSECUTIVE_UNUSABLE` (default 200) configure the limits.
+Python callers can pass `max_consecutive_refiner_errors` and
+`max_consecutive_unusable` to either engine. Resolved limits are recorded in
+the run manifest and per-scenario logs. Use a fresh output directory for 0.2.8;
+earlier completed results are not repaired automatically.
+
 ## Version 0.2.7
 
 A bug-fix release. IPI Arena's own scoring and AgentDojo's own execution and

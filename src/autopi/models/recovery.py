@@ -10,6 +10,8 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 
+from autopi.models.endpoints import EndpointConfigError
+
 
 class ResponseRecoveryError(RuntimeError):
     fatal = True
@@ -21,8 +23,11 @@ def _load_decoder(path, mtime_ns, size):
 
 
 def get_decoder(path):
-    stat = Path(path).stat()
-    return _load_decoder(str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size)
+    try:
+        stat = Path(path).stat()
+        return _load_decoder(str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError as exc:
+        raise EndpointConfigError(f"cannot read tokenizer {path!s}: {exc}") from exc
 
 
 class RawTokenDecoder:
@@ -30,8 +35,11 @@ class RawTokenDecoder:
         from tokenizers import Tokenizer
 
         path = Path(tokenizer_path)
-        self.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-        self.tokenizer = Tokenizer.from_file(str(path))
+        try:
+            self.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.tokenizer = Tokenizer.from_file(str(path))
+        except Exception as exc:
+            raise EndpointConfigError(f"cannot load tokenizer {path}: {exc}") from exc
         self.special_ids = {index for index, token in self.tokenizer.get_added_tokens_decoder().items()
                             if token.special}
 

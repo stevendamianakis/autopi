@@ -39,6 +39,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
+
 from autopi.core.prompts import (
     _ANTI_SUSPICION_NOTE,
     _LEGITIMIZE_NOTE,
@@ -85,8 +88,8 @@ _INITIAL_TEMPLATE = IMPORTANT_INSTRUCTIONS_SEED  # backward-compatible module de
 
 
 class GeneratorUnavailableError(RuntimeError):
-    """The generator (or its diagnostic judge) could not be reached after the endpoint's own
-    retries. The run stops before the scenario is logged, so ``--resume`` repeats it."""
+    """The generator or diagnostic judge is unavailable, misconfigured or repeatedly errors.
+    The run stops before the scenario is logged, so ``--resume`` repeats it."""
 
     fatal = True
 
@@ -103,7 +106,7 @@ def _http_status(exc: BaseException) -> int | None:
 def _generator_unreachable(exc: BaseException) -> bool:
     """A connection failure, timeout, rate limit or server error: the generator is down, as
     opposed to an answer it returned that cannot be used (which is skipped)."""
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    if isinstance(exc, (ConnectionError, TimeoutError, RequestsConnectionError, RequestsTimeout)):
         return True
     name = type(exc).__name__
     if "Connection" in name or "Timeout" in name:
@@ -114,12 +117,12 @@ def _generator_unreachable(exc: BaseException) -> bool:
 
 def _generator_misconfigured(exc: BaseException) -> bool:
     """A configuration or authentication error rather than a transient one: a missing API key
-    or provider SDK, or HTTP 401/403/404. It recurs identically on every scenario, so the run
+    or provider SDK, a missing tokenizer file, or HTTP 401/403/404. It recurs on every scenario, so the run
     stops (before the scenario is logged) instead of recording seed-only failures that
     ``--resume`` would then skip. A plain HTTP 400 stays a skipped, per-prompt failure."""
     from autopi.models.endpoints import EndpointConfigError
 
-    if isinstance(exc, (EndpointConfigError, ImportError)):
+    if isinstance(exc, (EndpointConfigError, ImportError, FileNotFoundError)):
         return True
     return _http_status(exc) in (401, 403, 404)
 
@@ -167,10 +170,25 @@ class TaxonomyEngine:
         techniques: Iterable[str] | str | None = None,
         seed_template: str | None = None,
         seed_name: str | None = None,
+        max_consecutive_refiner_errors: int | None = None,
+        max_consecutive_unusable: int | None = None,
     ) -> None:
         if not refiner_model:
             raise ValueError("refiner_model must be explicitly configured")
         self._refiner_config = refiner_config
+        self.max_consecutive_refiner_errors = int(
+            max_consecutive_refiner_errors if max_consecutive_refiner_errors is not None
+            else os.environ.get("TAX_MAX_CONSECUTIVE_REFINER_ERRORS", "3"))
+        self.max_consecutive_unusable = int(
+            max_consecutive_unusable if max_consecutive_unusable is not None
+            else os.environ.get("TAX_MAX_CONSECUTIVE_UNUSABLE", "200"))
+        if self.max_consecutive_refiner_errors < 1 or self.max_consecutive_unusable < 1:
+            raise ValueError("consecutive refiner error and unusable candidate limits must be positive")
+        # Keep request-error streaks across scenarios, separately for generation and diagnosis:
+        # a working judge must not hide a repeatedly failing generator (or vice versa).
+        self._refiner_error_streaks = {"refiner": 0, "diagnostic_judge": 0}
+        self._consecutive_unusable = 0
+        self.generation_stop_reason: str | None = None
         seqs = load_sequences(taxonomy_path)
         # ── which sub-techniques the sweep covers, and in what order ──
         # 1) optional subset by family / technique / sub-technique id, 2) sweep order,
@@ -443,6 +461,8 @@ class TaxonomyEngine:
         self._infra_failures = []
         self._succeeded_templates = []
         self.has_candidate = True
+        self._consecutive_unusable = 0
+        self.generation_stop_reason = None
         self._combo_idx = 0
         self._phase = "seed_paraphrase" if (self.seed_paraphrase_reps > 0 and not self.seed_only) else "taxonomy"
         self._para_sources = None
@@ -496,7 +516,7 @@ class TaxonomyEngine:
 
     def _check_refiner_error(self, e: Exception) -> None:
         """Stop on a generator that cannot be reached or is misconfigured, in a strict run, or
-        on a fatal error. Any other failed request is skipped like an unusable answer."""
+        on a fatal error. Bound consecutive unexpected request failures separately by role."""
         if _generator_unreachable(e):
             raise GeneratorUnavailableError(
                 f"the generator could not be reached ({type(e).__name__}: {str(e)[:160]}). The run "
@@ -507,6 +527,21 @@ class TaxonomyEngine:
                 "or SDK (it would fail the same way on every scenario), then rerun with --resume to continue") from e
         if self.strict_refiner or getattr(e, "fatal", False):
             raise RuntimeError("Taxonomy judge/refiner request failed") from e
+        role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
+        if _http_status(e) == 400:
+            # A recognized per-prompt rejection remains skippable, subject to the candidate limit.
+            self._refiner_error_streaks[role] = 0
+            return
+        self._refiner_error_streaks[role] += 1
+        if self._refiner_error_streaks[role] >= self.max_consecutive_refiner_errors:
+            raise GeneratorUnavailableError(
+                f"the {role} failed with {self._refiner_error_streaks[role]} consecutive unexpected errors "
+                f"({type(e).__name__}: {str(e)[:160]}). The run stopped before this scenario was logged; "
+                "fix the endpoint or client, then rerun with --resume to continue") from e
+
+    def _refiner_request_succeeded(self) -> None:
+        role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
+        self._refiner_error_streaks[role] = 0
 
     def _judge_text(self, messages: list, goal: str = "") -> str | None:
         self._judge_mode = None
@@ -516,14 +551,21 @@ class TaxonomyEngine:
             self._querying_judge = True
             resp = self._query(_build_judge_prompt(messages, goal))
             mode, reason, _guidance = _parse_judge(resp)
+            self._refiner_request_succeeded()
         except Exception as e:
             print(f"[TAXREFINER] judge error: {e}")
             self._check_refiner_error(e)
             return None
         finally:
             self._querying_judge = False
+        # Free text from a goal-aware judge can reveal the goal even after identifier masking.
+        # Modes 1/2 receive only one of the fixed category phrases; mode 3 keeps its diagnosis.
+        if self.newtask_aware:
+            reason = _scrub_guidance(_mask_targets(reason))
+        else:
+            mode = mode if mode in _MODE_PHRASE else None
+            reason = ""
         self._judge_mode = mode
-        reason = _scrub_guidance(_mask_targets(reason))
         if not (mode or reason):
             return None
         note = f"my agent {_MODE_PHRASE.get(mode or '', 'did not act on the line')}."
@@ -565,6 +607,16 @@ class TaxonomyEngine:
         if raw is not None:
             entry["raw"] = raw
         self._attempt_meta.append(entry)
+        if phase != "seed":
+            if status in {"unparseable", "refiner_error"}:
+                self._consecutive_unusable += 1
+                if self._consecutive_unusable >= self.max_consecutive_unusable:
+                    self.generation_stop_reason = "consecutive_unusable_generations"
+                    self.has_candidate = False
+                    print(f"[TAXREFINER] ending scenario after {self._consecutive_unusable} consecutive "
+                          "unusable generated candidates (no target attempts added)")
+            elif status == "pending" and template is not None:
+                self._consecutive_unusable = 0
 
     # ── generation helpers ──
     def _generate_from_combo(self, combo: list[dict], injection_goal: str) -> str | None:
@@ -578,6 +630,7 @@ class TaxonomyEngine:
                                             awareness_mode=self.awareness_mode)
             try:
                 response = self._query(prompt)
+                self._refiner_request_succeeded()
             except Exception as e:
                 print(f"[TAXREFINER] {cid} refiner error: {e}")
                 self._check_refiner_error(e)
@@ -614,6 +667,7 @@ class TaxonomyEngine:
             )
             try:
                 response = self._query(prompt)
+                self._refiner_request_succeeded()
             except Exception as e:
                 print(f"[TAXREFINER] paraphrase refiner error: {e}")
                 self._check_refiner_error(e)
@@ -643,17 +697,20 @@ class TaxonomyEngine:
     # ── phase driver ──
     def refine_template(self, injection_goal: str) -> bool:
         """Produce the next template. Skips refused/unparseable candidates inline. Returns
-        False only when no usable template remains (sweep exhausted AND all paraphrase
-        targets tried)."""
+        False when the schedule is exhausted or its consecutive unusable candidate limit is reached."""
+        if self.generation_stop_reason:
+            return False
         self._stash_last_transcript()
         cl_block = self._context_legit_block(injection_goal)
 
         # ── SEED-PARAPHRASE phase ── (default order: before the sweep)
         if not self.sweep_before_seed_para and self._next_seed_paraphrase(injection_goal, cl_block):
             return True
+        if self.generation_stop_reason:
+            return False
 
         # ── EXPLORE / broad sweep ──
-        while self._combo_idx < self.num_combos:
+        while not self.generation_stop_reason and self._combo_idx < self.num_combos:
             combo = self._combos[self._combo_idx]
             self._combo_idx += 1
             print(f"[TAXREFINER] attempt {self.get_attempt_number()} taxonomy L{len(combo)} {_combo_id(combo)}")
@@ -664,6 +721,9 @@ class TaxonomyEngine:
                 self._record(_combo_id(combo), _combo_name(combo), "taxonomy", template, "pending",
                              stack_level=len(combo))
                 return True
+
+        if self.generation_stop_reason:
+            return False
 
         # ── SEED-PARAPHRASE phase with sweep_before_seed_para ── it starts once the sweep is
         #    exhausted, also when the sweep's last candidates could not be written, so the order
@@ -677,7 +737,8 @@ class TaxonomyEngine:
     def _next_seed_paraphrase(self, injection_goal: str, cl_block: str) -> bool:
         """Write the next seed paraphrase. Skips refused/unparseable candidates inline and
         returns False when the seed-paraphrase phase has nothing left."""
-        while (not self.seed_only) and self._seed_para_try < self.seed_paraphrase_reps:
+        while (not self.generation_stop_reason and not self.seed_only
+               and self._seed_para_try < self.seed_paraphrase_reps):
             seed_tmpl = self._attempt_meta[0]["template"]
             sig = self._judge_text(
                 self._seq_transcript.get("SEED") if self._seed_para_try == 0 else self._last_failed_transcript(),
@@ -718,7 +779,7 @@ class TaxonomyEngine:
                 f"[TAXREFINER] entering paraphrase phase: {len(self._para_sources)} failed instructions "
                 f"x {self.paraphrase_reps} paraphrase attempts each"
             )
-        while self._para_src_idx < len(self._para_sources):
+        while not self.generation_stop_reason and self._para_src_idx < len(self._para_sources):
             if self._para_try >= self.paraphrase_reps:
                 self._para_src_idx += 1
                 self._para_try = 0
@@ -817,6 +878,9 @@ class TaxonomyEngine:
             "attempt_budget": self.attempt_budget,
             "total_attempts": self._attempts_recorded(),
             "total_candidates": len(self._attempt_meta),
+            "generation_stop_reason": self.generation_stop_reason,
+            "generator_limits": {"max_consecutive_refiner_errors": self.max_consecutive_refiner_errors,
+                                 "max_consecutive_unusable": self.max_consecutive_unusable},
             "strategy": getattr(self, "strategy_config", None),
             "injection_succeeded": final_security,
             "solved_phase": solved["phase"] if solved else None,

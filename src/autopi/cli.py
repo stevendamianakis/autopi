@@ -181,6 +181,10 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                                             max_tokens=target_max_tokens, tokenizer_path=target_tokenizer)
         refiner_endpoint = override_endpoint(resolve_endpoint(refiner, catalog, role="refiner"),
                                              tokenizer_path=refiner_tokenizer)
+        if refiner_endpoint.tokenizer_path:
+            from autopi.models.recovery import get_decoder
+
+            get_decoder(refiner_endpoint.tokenizer_path)
         if refiner_endpoint.max_tokens is None:
             refiner_endpoint = override_endpoint(refiner_endpoint,
                                                  max_tokens=int(os.environ.get("VLLM_REFINER_MAX_TOKENS", "1024")))
@@ -244,6 +248,8 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                     "stack_seed": engine.stack_seed, "techniques": engine.techniques, "max_sequences": engine.max_sequences,
                     "order": engine.order, "order_seed": engine.order_seed, "sweep_before_seed_para": engine.sweep_before_seed_para},
                 "mode": mode, "mechanisms": [engine.use_judge, engine.use_context, engine.use_legitimize],
+                "generator_limits": {"max_consecutive_refiner_errors": engine.max_consecutive_refiner_errors,
+                                     "max_consecutive_unusable": engine.max_consecutive_unusable},
                 "stop_at_first_success": stop, "max_attempts": max_attempts, "defense": defense,
                 "seed_sha256": hashlib.sha256((seed_template or "").encode()).hexdigest(),
                 "taxonomy_sha256": hashlib.sha256(Path(taxonomy_path or _BUNDLED_TAXONOMY).read_bytes()).hexdigest(),

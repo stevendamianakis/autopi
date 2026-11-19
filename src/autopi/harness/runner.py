@@ -45,6 +45,7 @@ class PointOutcome:
     first_success_attempt: int | None = None     # attempt index of the first success
     successful_attempts: int = 0                 # how many attempts succeeded
     solved_sources: list[str] = field(default_factory=list)   # seed / sub-techniques with a success
+    generation_stop_reason: str | None = None
 
 
 @dataclass
@@ -106,6 +107,9 @@ class RunSummary:
         if self.infrastructure_only:
             lines.append(f"only infrastructure failures, left out of ASR and not logged "
                          f"(--resume runs them again): {len(self.infrastructure_only)}")
+        limited = sum(o.generation_stop_reason is not None for o in self.outcomes)
+        if limited:
+            lines.append(f"ended after consecutive unusable generations: {limited}")
         return "\n".join(lines)
 
 
@@ -184,6 +188,7 @@ def run_attack(
                 first_success_attempt=prev.get("first_success_attempt"),
                 successful_attempts=int(prev.get("num_successes", 1 if done_ok else 0) or 0),
                 solved_sources=list(prev.get("solved_sources") or []),
+                generation_stop_reason=prev.get("generation_stop_reason"),
             ))
             if verbose:
                 # Logs written before the stop rule was recorded came from early-stopped runs.
@@ -281,10 +286,12 @@ def run_attack(
             first_success_attempt=first_success_attempt,
             successful_attempts=len(solved_all),
             solved_sources=solved_sources,
+            generation_stop_reason=engine.generation_stop_reason,
         )
         summary.outcomes.append(outcome)
         if journal:
-            journal.emit("point_end", succeeded=succeeded, attempts=attempts)
+            journal.emit("point_end", succeeded=succeeded, attempts=attempts,
+                         generation_stop_reason=engine.generation_stop_reason)
         if verbose:
             tag = "HIT " if succeeded else "miss"
             seq = f" via {outcome.solved_sequence_id}" if succeeded else ""

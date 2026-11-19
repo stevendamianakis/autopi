@@ -153,10 +153,15 @@ def build_target_pipeline(
         llm.name = endpoint.model
     elif endpoint.provider == "anthropic":
         import anthropic
-        import httpx2
         from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
 
         from autopi.models.clients import require_no_reasoning_effort
+
+        try:
+            from httpx2 import Limits
+        except ImportError:
+            # Anthropic SDK 0.x/1.x uses httpx, and need not have httpx2 installed.
+            from httpx import Limits
 
         require_no_reasoning_effort(endpoint)
         # AgentDojo's Anthropic element streams through an async client (it copies a sync
@@ -166,7 +171,7 @@ def build_target_pipeline(
         # request twice (once on the stale connection, once on a fresh one). Disabling HTTP
         # keep-alive makes every request open its own connection, so each is sent once.
         http_client = anthropic.DefaultAsyncHttpxClient(
-            timeout=endpoint.timeout, limits=httpx2.Limits(max_keepalive_connections=0))
+            timeout=endpoint.timeout, limits=Limits(max_keepalive_connections=0))
         client = anthropic.AsyncAnthropic(api_key=endpoint.api_key(), max_retries=endpoint.retries,
                                           http_client=http_client,
                                           **({"base_url": endpoint.base_url} if endpoint.base_url else {}))

@@ -68,6 +68,11 @@ can't…", "I'm sorry…") counts as one, also inside the template delimiters, s
 written line that opens this way is skipped too. A generator that cannot be reached (a
 connection failure, timeout, rate limit or server error after the endpoint's
 retries) stops the run before the scenario is logged, so `--resume` repeats it.
+This includes TLS/SSL and proxy failures. A missing, unreadable or invalid
+tokenizer is a setup error. Three consecutive unexpected request errors from
+the generator or diagnostic judge also stop the run before logging the current
+scenario. Each role keeps its own streak across scenarios; a successful request
+clears that role's streak. HTTP 400 remains a skippable per-prompt rejection.
 Infrastructure failures consume budget but never become failed source lines or
 failed-variant examples. A scenario whose every attempt was an infrastructure
 failure is not logged and stays out of ASR; the summary counts it, and `--resume`
@@ -77,7 +82,27 @@ judge as a failure.
 
 The finite schedule can end before the budget (for example after skipped
 generator outputs or when no failed sources exist). `--max-attempts` can impose
-a smaller cap. `--no-early-stop` overrides `stop: first_success` for a coverage
+a smaller cap. To bound huge sweeps whose generator keeps refusing or returning
+unusable output, the scenario also ends after **200 consecutive unusable generated
+candidates**. A candidate can use the existing two prompt tiers before it is
+skipped; neither tier adds a target attempt. The streak spans sweep and exploit
+blocks, ignores fixed-seed blocks and diagnostic replies, resets on a usable
+generated candidate, and starts fresh for each scenario. The 132-unit L1 sweep
+fits below the default limit even if every candidate is unusable. The scenario
+is logged with `generation_stop_reason: consecutive_unusable_generations`, its
+actual target-attempt count and any successes already found. Resume retains
+this completed result, and the summary reports how many scenarios hit the limit.
+
+Configure positive integer limits with `TAX_MAX_CONSECUTIVE_UNUSABLE` (default
+200) and `TAX_MAX_CONSECUTIVE_REFINER_ERRORS` (default 3). Python callers can use
+the corresponding `max_consecutive_unusable` and `max_consecutive_refiner_errors`
+constructor arguments. Resolved limits appear in the manifest and scenario logs.
+
+Modes 1 and 2 receive only the diagnostic judge's fixed failure-category phrase;
+its free-text explanation is withheld to keep the injection goal hidden. Mode 3
+retains that explanation.
+
+`--no-early-stop` overrides `stop: first_success` for a coverage
 run. Use a fresh output folder when changing settings or code.
 
 Without `--strategy`, the existing schedule flags remain available. Do not mix

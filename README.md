@@ -126,7 +126,8 @@ without a seed block.
 <br>
 
 - `--mode 3`, the default and the paper's setting, shows the generator the user task and the injection
-  goal. Modes 1 and 2 write goal-blind templates, and mode 2 also sees the user task.
+  goal. Modes 1 and 2 write goal-blind templates, and mode 2 also sees the user task. Their judge
+  feedback includes only a fixed failure category, keeping the goal out of the explanation.
 - `--no-judge`, `--no-context` and `--no-legitimize` switch off one of the three adaptive mechanisms.
 - `--seed-file` uses another seed, and `--no-seed` opens with the sweep.
 - `--taxonomy-path` sweeps another taxonomy with the same file layout.
