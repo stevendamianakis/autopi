@@ -735,7 +735,7 @@ def _extract_context(messages: list, goal: str, template: str | None) -> str:
     tok = _goal_token(goal)
     doc = ""
     for m in messages:
-        if m.get("role") != "tool":
+        if m.get("role") != "tool" or m.get("simulated"):   # a simulated reply is no native document
             continue
         raw = _flat_content(m.get("content"))
         t = _norm_ws(raw)                                      # normalise BEFORE matching
@@ -761,7 +761,8 @@ def _extract_context(messages: list, goal: str, template: str | None) -> str:
             doc = t[:s] + _INJ_PLACEHOLDER + t[e:]
             break
     if not doc:  # injection not locatable -> largest tool document as-is (normalised)
-        outs = [_norm_ws(_flat_content(m.get("content"))) for m in messages if m.get("role") == "tool"]
+        outs = [_norm_ws(_flat_content(m.get("content"))) for m in messages
+                if m.get("role") == "tool" and not m.get("simulated")]
         doc = max(outs, key=len) if outs else ""
     # Defensive: never leave the goal TEXT or its token in the shown document.
     if g and g in doc:

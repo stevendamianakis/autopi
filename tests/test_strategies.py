@@ -120,6 +120,16 @@ def test_a_bounded_strategy_can_search_even_larger_combination_spaces(monkeypatc
     assert all(record["stack_level"] == 20 for record in engine._attempt_meta)
 
 
+def test_a_sweep_too_large_to_index_runs_until_the_budget_ends_it(monkeypatch):
+    import sys
+
+    engine = make_engine(monkeypatch, [{"kind": "seed"}, {"kind": "sweep", "level": 20}], budget=3)
+    assert engine.num_combos > sys.maxsize                 # C(132, 20) combinations, no limit
+    result = run_attack(Adapter(), engine, verbose=False)
+    assert result.outcomes[0].attempts == 3
+    assert [record["stack_level"] for record in engine._attempt_meta] == [0, 20, 20]
+
+
 def test_strategy_ignores_legacy_schedule_environment(monkeypatch):
     monkeypatch.setenv("TAX_MAX_SEQUENCES", "1")
     monkeypatch.setenv("TAX_TECHNIQUES", "F1")

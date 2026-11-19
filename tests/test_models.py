@@ -95,6 +95,32 @@ def test_generator_preserves_literal_structural_tokens(monkeypatch):
     assert query_endpoint(endpoint, "prompt") == text
 
 
+def test_anthropic_generator_sends_no_sampling_parameters_through_the_real_sdk(monkeypatch):
+    """Through the installed SDK's own create call and HTTP layer: the current Anthropic API
+    rejects temperature, top_p and top_k, so the generator sends none of them."""
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")                   # the HTTP package of the anthropic SDK 2.x
+
+    sent = []
+
+    def reply(request):
+        sent.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "id": "msg_offline", "type": "message", "role": "assistant", "model": "any-model",
+            "content": [{"type": "text", "text": "[TEMPLATE_START] the line [TEMPLATE_END]"}],
+            "stop_reason": "end_turn", "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    class OfflineAnthropic(anthropic.Anthropic):
+        def __init__(self, **kwargs):
+            super().__init__(http_client=httpx2.Client(transport=httpx2.MockTransport(reply)), **kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", OfflineAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-value")
+    endpoint = ModelEndpoint("anthropic", "any-model", max_tokens=2048)
+    assert query_endpoint(endpoint, "prompt", temperature=0.7) == "[TEMPLATE_START] the line [TEMPLATE_END]"
+    assert not {"temperature", "top_p", "top_k"} & set(sent[0]) and sent[0]["max_tokens"] == 2048
+
+
 def test_recovered_generator_text_keeps_special_tokens_but_not_the_end_of_turn_token(tmp_path, monkeypatch):
     tokenizers = pytest.importorskip("tokenizers")
     vocab = {"<unk>": 0, "[TEMPLATE_START]": 1, "system": 2, "send": 3, "[TEMPLATE_END]": 4}

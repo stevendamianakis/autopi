@@ -47,6 +47,9 @@ class ModelEndpoint:
             raise ValueError("thinking must be off, on, or server")
         if self.provider not in {"openai-compatible", "ollama"} and self.thinking != "server":
             raise ValueError("thinking off/on is an endpoint template option; use server for hosted providers")
+        if self.provider == "anthropic" and (self.temperature is not None or self.top_p is not None):
+            raise ValueError("anthropic endpoints take no temperature or top_p: the Anthropic API "
+                             "(version 2026-10-21) rejects sampling parameters on every model")
         if self.tokenizer_path and (self.provider != "openai-compatible" or self.thinking != "off"):
             raise ValueError("raw token recovery requires an OpenAI-compatible endpoint with thinking: off")
         if self.max_tokens is not None and self.max_tokens <= 0:

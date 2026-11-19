@@ -27,10 +27,16 @@ Settings that change what a run measures:
   ``IPI_ARENA_BEHAVIORS_PATH`` environment variable) points at another copy of the scenario
   files. Which ``ipi_arena_bench`` package is installed also matters: copies differ in how
   they convert prefilled conversations (README, "IPI Arena").
+
+The transcript handed to the engine's diagnostic judge and context blending holds the
+scenario's prefilled history and every step of the agent's turn: what it wrote, its tool
+calls, and the simulated tool results, marked ``simulated`` so that context blending reads
+only the scenario's own documents.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Iterator
 
@@ -56,8 +62,24 @@ def _flatten(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return " ".join(str(b.get("content") or b.get("text") or b) if isinstance(b, dict) else str(b) for b in content)
+        return " ".join(
+            "[image]" if isinstance(b, dict) and b.get("type") in ("image_url", "image")
+            else str(b.get("content") or b.get("text") or b) if isinstance(b, dict) else str(b)
+            for b in content
+        )
     return str(content or "")
+
+
+def _plain_call(call) -> dict:
+    """An OpenAI-style tool call as the engine's plain ``{"function", "args"}`` dict."""
+    fn = call.get("function") if isinstance(call, dict) else None
+    name, args = (fn.get("name"), fn.get("arguments")) if isinstance(fn, dict) else (None, None)
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            pass
+    return {"function": name, "args": args if args is not None else {}}
 
 
 def _build_vllm_client(spec: str, *, endpoint=None, journal=None, role="target"):
@@ -255,9 +277,23 @@ class IPIArenaAdapter:
     def _run_harness(self, behavior_id: str, injection_text: str):
         """One scored run of the benchmark's own harness. A run that ends with a harness error
         (or raises) is repeated up to ``harness_retries`` times, then reported as an
-        infrastructure failure, so it is never scored as a failed attack."""
+        infrastructure failure, so it is never scored as a failed attack. The target's requests
+        are recorded, so :meth:`run` can rebuild the agent's whole turn."""
         err = None
         for _ in range(1 + self.harness_retries):
+            calls: list = []
+            self._target_calls = calls
+            client = getattr(self._runner, "target_client", None)
+            chat = getattr(client, "chat", None)
+            if chat is not None:
+                def recording(*args, _chat=chat, **kwargs):
+                    messages = args[0] if args else kwargs.get("messages")
+                    size = len(messages) if isinstance(messages, list) else 0
+                    response = _chat(*args, **kwargs)
+                    calls.append((messages, size, response))
+                    return response
+
+                client.chat = recording
             try:
                 res = self._runner.run_one(behavior_id, injection_text)
                 err = getattr(res, "error", None)
@@ -265,9 +301,35 @@ class IPIArenaAdapter:
                 if getattr(e, "fatal", False):
                     raise
                 err = f"{type(e).__name__}: {e}"
+            finally:
+                if chat is not None:
+                    client.chat = chat
             if err is None:
                 return res
         raise AdapterInfraError(f"ipi_harness: {str(err)[:120]}")
+
+    def _agent_transcript(self) -> list | None:
+        """The last harness run as plain messages: the prefilled history as role and content
+        (so the agent's own steps stay inside the judge's view), then each step of the agent's
+        turn with its tool calls, simulated tool results marked ``simulated``. None when no
+        target request was recorded."""
+        calls = getattr(self, "_target_calls", None)
+        if not calls or not isinstance(calls[0][0], list):
+            return None
+        conversation, prefilled, last = calls[0][0], calls[0][1], calls[-1][2]
+        out = []
+        for i, m in enumerate(conversation):
+            entry = {"role": m.get("role", ""), "content": _flatten(m.get("content"))}
+            if i >= prefilled:
+                if m.get("tool_calls"):
+                    entry["tool_calls"] = [_plain_call(call) for call in m["tool_calls"]]
+                if entry["role"] == "tool":
+                    entry["simulated"] = True
+            out.append(entry)
+        # The harness appends a step with tool calls to the conversation; the closing reply is not.
+        if not getattr(last, "tool_calls", None):
+            out.append({"role": "assistant", "content": getattr(last, "content", None) or "", "tool_calls": []})
+        return out
 
     def run(self, point: AttackPoint, injection_text: str) -> RunResult:
         from ipi_arena_bench.behavior import build_messages
@@ -289,20 +351,23 @@ class IPIArenaAdapter:
         # alone (the sweep then stops on action success); otherwise use IPI Arena's full is_break.
         security = action_only if self.ignore_concealment else full_break
 
-        # Reconstruct a plain transcript for the engine's judge/context mechanisms: the exact
-        # prefilled messages the target saw (with the injection placed) + the model's reply.
-        behavior = point.extra["_behavior"]
-        try:
-            seen = build_messages(behavior, injection_text)
-        except Exception:
-            seen = behavior.get("messages", [])
-        messages = [{"role": m.get("role", ""), "content": _flatten(m.get("content"))} for m in seen]
-        tcs = [
-            {"function": (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)),
-             "args": (tc.get("arguments") if isinstance(tc, dict) else getattr(tc, "arguments", {}))}
-            for tc in (getattr(res, "tool_calls_made", None) or [])
-        ]
-        messages.append({"role": "assistant", "content": getattr(res, "model_response", "") or "", "tool_calls": tcs})
+        # The plain transcript for the engine's judge/context mechanisms: the recorded run, or,
+        # when no target request was recorded, the prefilled messages the target saw (with the
+        # injection placed) + the model's final reply carrying all its tool calls.
+        messages = self._agent_transcript()
+        if messages is None:
+            behavior = point.extra["_behavior"]
+            try:
+                seen = build_messages(behavior, injection_text)
+            except Exception:
+                seen = behavior.get("messages", [])
+            messages = [{"role": m.get("role", ""), "content": _flatten(m.get("content"))} for m in seen]
+            tcs = [
+                {"function": (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)),
+                 "args": (tc.get("arguments") if isinstance(tc, dict) else getattr(tc, "arguments", {}))}
+                for tc in (getattr(res, "tool_calls_made", None) or [])
+            ]
+            messages.append({"role": "assistant", "content": getattr(res, "model_response", "") or "", "tool_calls": tcs})
         return RunResult(
             utility=utility,
             security=security,

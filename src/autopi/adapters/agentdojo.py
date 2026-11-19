@@ -156,12 +156,21 @@ class AgentDojoAdapter:
 
 def _classify_infra_error(e: Exception) -> str | None:
     """Map provider/parse errors that abort before the agent fairly saw the injection to an
-    infra-failure kind (counted against the budget but kept out of the refiner's history)."""
+    infra-failure kind (counted against the budget but kept out of the refiner's history).
+    Errors of every provider client count (OpenAI, Anthropic, Google), also when AgentDojo's
+    Anthropic client hands one over wrapped in tenacity's ``RetryError`` after its retries."""
     import yaml
 
+    if type(e).__module__.split(".")[0] == "tenacity":
+        attempt = getattr(e, "last_attempt", None)
+        inner = attempt.exception() if attempt is not None else None
+        if isinstance(inner, Exception):
+            return _classify_infra_error(inner)
     if isinstance(e, (TimeoutError, ConnectionError)):
         return "transport_error"
-    if type(e).__module__.split(".")[0] in {"openai", "httpx", "requests"}:
+    module = type(e).__module__
+    if module.split(".")[0] in {"openai", "anthropic", "httpx", "requests"} or \
+            module.startswith(("google.genai", "google.api_core")):
         return "provider_error"
     msg = repr(e)
     if isinstance(e, yaml.YAMLError):

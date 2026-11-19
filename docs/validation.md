@@ -1,8 +1,8 @@
-# Release validation — version 0.2.1, November 18, 2026
+# Release validation — version 0.2.2, November 18, 2026
 
 Validated locally on Python 3.11.18, macOS arm64.
 
-- **176 tests passed**, covering AutoPI and both bundled benchmark test suites.
+- **180 tests passed**, covering AutoPI and both bundled benchmark test suites.
   The AutoPI tests also passed on Python 3.13.16 against the built wheels.
 - The lint check passed on the source and the tests.
 - Offline AgentDojo checks compared the adapter's selected slots and native
@@ -24,13 +24,15 @@ Validated locally on Python 3.11.18, macOS arm64.
   CLIs passed model-free setup validation.
 - OpenAI, Anthropic and Google AgentDojo pipelines were constructed with arbitrary
   model ids and dummy credentials without contacting model endpoints. The
-  Anthropic target also ran through AgentDojo's own streaming call with an
-  offline stub: configured decoding settings reach the request and the call is
-  traced.
+  Anthropic target and generator also ran through the installed anthropic SDK's
+  own request code over an offline HTTP transport: no sampling parameter is
+  sent, the output cap applies, and the target call is traced. Provider errors
+  of the OpenAI, Anthropic and Google clients count as infrastructure failures.
 - IPI Arena attempts were checked against the benchmark's own scoring rules: an
   unusable judge reply scores 0, and only a missing WorldSim reply becomes
   `{"status": "success"}`. The action-only score was checked against an explicit
-  list of the concealment criteria of all 41 scenarios.
+  list of the concealment criteria of all 41 scenarios. The transcript AutoPI's
+  diagnostic judge reads holds every step of the agent's turn.
 - The publication folder was scanned for the workspace's private paths, server
   addresses, private keys and credential patterns. No such values were found.
 

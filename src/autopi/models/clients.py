@@ -124,8 +124,10 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
 
         client = anthropic.Anthropic(api_key=endpoint.api_key(), timeout=endpoint.timeout,
                                      max_retries=endpoint.retries, **({"base_url": endpoint.base_url} if endpoint.base_url else {}))
-        payload = dict(model=endpoint.model, messages=[{"role": "user", "content": prompt}],
-                       max_tokens=max_tokens, temperature=temperature)
+        # No sampling parameters: the Anthropic API (version 2026-10-21) rejects them on every model.
+        payload = dict(model=endpoint.model, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens)
+        for key in endpoint.omit_parameters:
+            payload.pop(key, None)
         if journal:
             journal.emit("llm_request", role=role, request=payload)
         response = client.messages.create(**payload)

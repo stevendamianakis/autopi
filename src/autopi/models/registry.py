@@ -177,17 +177,22 @@ def build_target_pipeline(
     ))
 
 
+_SAMPLING_PARAMETERS = ("temperature", "top_p", "top_k")
+
+
 def _instrument_anthropic(messages, endpoint, journal):
-    """Apply the endpoint's decoding settings to ``messages.stream`` of an async Anthropic
-    client, the call AgentDojo makes, and trace the request and the final message. Unset
-    fields keep AgentDojo's own values (temperature 0, 1,024 output tokens)."""
+    """Prepare ``messages.stream`` of an async Anthropic client, the call AgentDojo makes, and
+    trace the request and the final message. AgentDojo always passes a temperature, but the
+    Anthropic API (version 2026-10-21, anthropic SDK 2.x) rejects sampling parameters on every
+    model and the SDK no longer accepts them, so they are removed. The output cap is the
+    endpoint's ``max_tokens``, or AgentDojo's 1,024."""
     original = messages.stream
 
     def stream(*args, **kwargs):
-        for key in ("temperature", "top_p", "max_tokens"):
-            value = getattr(endpoint, key)
-            if value is not None:
-                kwargs[key] = value
+        for key in _SAMPLING_PARAMETERS:
+            kwargs.pop(key, None)
+        if endpoint.max_tokens is not None:
+            kwargs["max_tokens"] = endpoint.max_tokens
         for key in endpoint.omit_parameters:
             kwargs.pop(key, None)
         if journal:

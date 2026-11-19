@@ -61,17 +61,35 @@ def test_native_anthropic_message_conversion_works_with_current_sdk_types():
     assert messages[0]["role"] == "user" and messages[0]["content"][0].text == "User message"
 
 
-def test_anthropic_target_settings_and_trace_reach_the_call_agentdojo_makes(monkeypatch, tmp_path):
-    """AgentDojo's Anthropic element streams through an async client. The endpoint's settings
-    must reach that call, unset ones keep AgentDojo's values, and the call is traced."""
+def _anthropic_sse(text):
+    """A complete streamed Messages API reply, as the Anthropic server sends it."""
+    import json
+
+    events = [
+        ("message_start", {"type": "message_start", "message": {
+            "id": "msg_offline", "type": "message", "role": "assistant", "model": "any-model", "content": [],
+            "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}}),
+        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}),
+        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                           "usage": {"output_tokens": 1}}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events).encode()
+
+
+def test_anthropic_target_sends_no_sampling_parameters_through_the_real_sdk(monkeypatch, tmp_path):
+    """The request goes through the installed SDK's own stream call and HTTP layer, so a
+    parameter the SDK or the API version does not accept fails here (AgentDojo always passes a
+    temperature). The output cap is the alias's, else AgentDojo's 1,024, and the call is traced."""
     pytest.importorskip("agentdojo")
-    pytest.importorskip("anthropic")
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")                   # the HTTP package of the anthropic SDK 2.x
     import json
 
     from agentdojo.agent_pipeline.llms.anthropic_llm import AnthropicLLM
     from agentdojo.functions_runtime import FunctionsRuntime
-    from anthropic.resources.messages.messages import AsyncMessages
-    from anthropic.types import Message, TextBlock, Usage
 
     from autopi.harness.journal import Journal
     from autopi.models.endpoints import ModelEndpoint
@@ -79,23 +97,15 @@ def test_anthropic_target_settings_and_trace_reach_the_call_agentdojo_makes(monk
 
     sent = []
 
-    class _Stream:
-        async def __aenter__(self):
-            return self
+    def reply(request):
+        sent.append(json.loads(request.content))
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=_anthropic_sse("done"))
 
-        async def __aexit__(self, *exc_info):
-            return False
+    class OfflineAsyncAnthropic(anthropic.AsyncAnthropic):
+        def __init__(self, **kwargs):
+            super().__init__(http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(reply)), **kwargs)
 
-        async def get_final_message(self):
-            return Message(id="msg", type="message", role="assistant", model="any-model", stop_reason="end_turn",
-                           stop_sequence=None, content=[TextBlock(type="text", text="done")],
-                           usage=Usage(input_tokens=1, output_tokens=1))
-
-    def stream(self, **kwargs):
-        sent.append(kwargs)
-        return _Stream()
-
-    monkeypatch.setattr(AsyncMessages, "stream", stream)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", OfflineAsyncAnthropic)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-value")
     journal = Journal(tmp_path)
 
@@ -103,19 +113,54 @@ def test_anthropic_target_settings_and_trace_reach_the_call_agentdojo_makes(monk
         endpoint = ModelEndpoint("anthropic", "any-model", **settings)
         pipeline = build_target_pipeline("anthropic:any-model", endpoint=endpoint, journal=journal)
         llm = next(element for element in pipeline.elements if isinstance(element, AnthropicLLM))
-        llm.query("hi", FunctionsRuntime([]), messages=[
+        _, _, _, messages, _ = llm.query("hi", FunctionsRuntime([]), messages=[
             {"role": "system", "content": [{"type": "text", "content": "System message"}]},
             {"role": "user", "content": [{"type": "text", "content": "hi"}]},
         ])
+        assert messages[-1]["content"][0]["content"] == "done"
         return sent[-1]
 
-    configured = request(temperature=0.7, top_p=0.9, max_tokens=7777)
-    assert (configured["temperature"], configured["top_p"], configured["max_tokens"]) == (0.7, 0.9, 7777)
-    defaults = request()
-    assert (defaults["temperature"], defaults["max_tokens"]) == (0.0, 1024) and "top_p" not in defaults
-    assert "temperature" not in request(omit_parameters=("temperature",))
+    for body in (request(max_tokens=7777), request()):
+        assert not {"temperature", "top_p", "top_k"} & set(body)
+    assert (sent[0]["max_tokens"], sent[1]["max_tokens"]) == (7777, 1024)
     events = [json.loads(line)["event"] for line in journal.path.read_text().splitlines()]
-    assert events.count("llm_request") == events.count("llm_response_original") == 3
+    assert events.count("llm_request") == events.count("llm_response_original") == 2
+    for setting in ({"temperature": 0.0}, {"top_p": 0.9}):
+        with pytest.raises(ValueError, match="temperature or top_p"):
+            ModelEndpoint("anthropic", "any-model", **setting)
+
+
+def test_provider_errors_of_every_client_are_infrastructure_failures():
+    pytest.importorskip("agentdojo")
+    anthropic = pytest.importorskip("anthropic")
+    errors = pytest.importorskip("google.genai.errors")
+    openai = pytest.importorskip("openai")
+    tenacity = pytest.importorskip("tenacity")
+    httpx2 = pytest.importorskip("httpx2")
+    import httpx
+
+    from autopi.adapters.agentdojo import _classify_infra_error
+
+    request = httpx2.Request("POST", "https://api.example.invalid/v1")       # anthropic SDK 2.x objects
+
+    def status(code):
+        return httpx2.Response(code, request=request, json={"error": {"message": "test"}})
+
+    def wrapped(exc):  # what AgentDojo's Anthropic client raises after its three tries
+        return tenacity.RetryError(tenacity.Future.construct(3, exc, True))
+
+    provider_errors = [
+        openai.APIConnectionError(request=httpx.Request("POST", "https://api.example.invalid/v1")),
+        anthropic.APIConnectionError(request=request),
+        anthropic.RateLimitError("rate", response=status(429), body=None),
+        anthropic.InternalServerError("server", response=status(500), body=None),
+        wrapped(anthropic.RateLimitError("rate", response=status(429), body=None)),
+        errors.ClientError(429, {"error": {"code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED"}}),
+        errors.ServerError(503, {"error": {"code": 503, "message": "busy", "status": "UNAVAILABLE"}}),
+    ]
+    assert [_classify_infra_error(exc) for exc in provider_errors] == ["provider_error"] * len(provider_errors)
+    assert _classify_infra_error(TypeError("a bug")) is None             # bugs still stop the run
+    assert _classify_infra_error(wrapped(TypeError("a bug"))) is None
 
 
 def test_all_ipi_scenarios_and_server_conversion_fixes_are_bundled():

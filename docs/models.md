@@ -16,7 +16,7 @@ The YAML `models` mapping supports these fields:
 | `tool_mode` | AgentDojo: `prompted` text tools or `native` API tools |
 | `thinking` | Compatible endpoint template mode: `off`, `on`, `server` |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
-| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides |
+| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides (`anthropic`: `max_tokens` only) |
 | `timeout`, `retries` | Request timeout in seconds and provider retry count |
 | `reasoning_effort` | Optional provider reasoning-effort setting |
 | `extra_body` | Additional provider-specific request fields for compatible APIs |
@@ -27,9 +27,13 @@ endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
 it defaults to the target. `--worldsim` is its tool simulator and defaults to
 the benchmark judge. These have independent model aliases and URLs.
 
-Hosted AgentDojo targets use the benchmark's native provider clients. Decoding
-fields an alias leaves unset keep that client's defaults: AgentDojo's Anthropic
-client sends temperature 0 and allows 1,024 output tokens. IPI Arena
+Hosted AgentDojo targets use the benchmark's native provider clients. Anthropic
+requests carry no sampling parameters: the Anthropic API version that the
+anthropic SDK 2.x sends (2026-10-21) rejects `temperature`, `top_p` and `top_k`
+on every model, so an `anthropic` alias cannot set them and requests use the
+API's default sampling. An Anthropic AgentDojo target allows 1,024 output tokens
+unless its alias sets `max_tokens`; for a model that thinks by default, the
+thinking counts toward that cap. IPI Arena
 uses native tools via the provider's OpenAI-compatible API. Provider compatibility
 layers may differ from native APIs; record the interface in your results.
 See the official [Claude compatibility documentation](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)

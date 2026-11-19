@@ -1,5 +1,17 @@
 # Release notes
 
+## Version 0.2.2
+
+A bug-fix release that also corrects version 0.2.1. IPI Arena's own scoring is
+unchanged.
+
+| Area | Fix |
+|---|---|
+| Anthropic endpoints | No sampling parameters are sent. The anthropic SDK 2.x, which the tested setup pins, no longer accepts `temperature`, `top_p` or `top_k`, and the API version it sends (2026-10-21) rejects them on every model. So every Anthropic generator request failed, and every Anthropic AgentDojo target request failed unless its alias omitted `temperature`. An `anthropic` alias that sets `temperature` or `top_p` is now refused when it is loaded. The 0.2.1 entry that says these settings reach the request is wrong |
+| Provider errors on AgentDojo | Anthropic and Google errors count as infrastructure failures, as OpenAI errors already did, also when AgentDojo's Anthropic client passes one on after its retries. Before, such an error stopped the run |
+| IPI Arena transcript | The transcript that AutoPI's diagnostic judge and context blending read holds every step of the agent's turn: what it wrote between tool calls, each call, and the simulated tool results. Context blending still reads only the scenario's own documents |
+| Strategy sweeps | A sweep with more combinations than an index can count (for example `level: 20` without `limit`) runs until the budget ends it. Before, it failed at its start |
+
 ## Version 0.2.1
 
 A bug-fix release. IPI Arena's own scoring is unchanged, and so is every default

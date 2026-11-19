@@ -5,6 +5,7 @@ reordered or repeated. Combinations are generated lazily, including higher L_n.
 """
 from __future__ import annotations
 
+import sys
 from itertools import islice
 from pathlib import Path
 
@@ -190,7 +191,9 @@ class StrategyEngine(TaxonomyEngine):
                 self._finish(self._seed_source, record)
             elif kind == "sweep":
                 schedule, count = self._plans[block["id"]]
-                for combo in islice(schedule, count):
+                # A large sweep (level 20 without a limit) can hold more combinations than an
+                # index can count; the budget ends the run long before that bound.
+                for combo in islice(schedule, min(count, sys.maxsize)):
                     self._adaptive_block = self._context_legit_block(goal)
                     template = self._generate_from_combo(combo, goal)
                     if template is None:
