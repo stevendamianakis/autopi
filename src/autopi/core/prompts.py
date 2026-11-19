@@ -115,8 +115,9 @@ def _extract_template_seq(
     sanitisation. Modes 1/2 require the placeholder. Mode 3 rejects the
     placeholder because the generated line must already contain the new task
     (or its faithful paraphrase). Returns None if extraction fails, the line is
-    empty, or the mode-specific placeholder check or the YAML-safety round-trip
-    fails. The engine skips such an answer without a target call. ``yaml_safe``
+    empty or opens like a refusal (also inside the delimiters), or the mode-specific
+    placeholder check or the YAML-safety round-trip fails. The engine skips such an
+    answer without a target call. ``yaml_safe``
     runs the YAML embedding check for AgentDojo; a benchmark that places the text
     outside YAML (IPI Arena, JSON) sets it False.
     """
@@ -136,6 +137,10 @@ def _extract_template_seq(
 
     template = _sanitize_template_seq(template.strip(), allow_unicode)
     if not template.strip():                     # an empty line is unusable, like a refusal
+        return None
+    if _REFUSAL_OPENING.search(template.strip()):
+        # A refusal written inside the delimiters ("I can't help with that"). Modes 1/2 also
+        # reject it for lacking the placeholder; mode 3 needs this check.
         return None
     if require_placeholder:
         if "<task_goes_here>" not in template:

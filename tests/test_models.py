@@ -522,3 +522,18 @@ def test_reasoning_effort_is_refused_for_native_agentdojo_targets(monkeypatch):
 def test_anthropic_endpoints_cannot_omit_the_required_max_tokens():
     with pytest.raises(ValueError, match="max_tokens"):
         ModelEndpoint("anthropic", "m", omit_parameters=["max_tokens"])
+
+
+def test_recovery_refuses_token_ids_outside_the_tokenizer_vocabulary(tmp_path):
+    """A real tokenizer silently drops an unknown id; recovery must fail instead."""
+    tokenizers = pytest.importorskip("tokenizers")
+    tokenizer = tokenizers.Tokenizer(tokenizers.models.WordLevel({"[UNK]": 0, "hello": 1, "world": 2}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    path = tmp_path / "tokenizer.json"
+    tokenizer.save(str(path))
+    decoder = RawTokenDecoder(str(path))
+    good = {"choices": [{"token_ids": [1, 2], "finish_reason": "stop", "message": {"content": "stripped"}}]}
+    assert decoder.recover(good)["choices"][0]["message"]["content"] == "hello world"
+    bad = {"choices": [{"token_ids": [1, 99999, 2], "finish_reason": "stop", "message": {"content": "stripped"}}]}
+    with pytest.raises(ResponseRecoveryError, match="vocabulary"):
+        decoder.recover(bad)

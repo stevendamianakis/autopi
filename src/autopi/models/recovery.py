@@ -65,6 +65,11 @@ class RawTokenDecoder:
             ids = choice.get("token_ids")
             if not isinstance(ids, list) or any(type(value) is not int or value < 0 for value in ids):
                 raise ResponseRecoveryError("missing or invalid choice.token_ids; refusing stripped response")
+            vocab_size = getattr(self.tokenizer, "get_vocab_size", None)
+            if callable(vocab_size) and ids and max(ids) >= vocab_size(with_added_tokens=True):
+                # The tokenizer would silently drop an unknown id, losing generated text.
+                raise ResponseRecoveryError("choice.token_ids holds an id outside the tokenizer's vocabulary; "
+                                            "the configured tokenizer does not match the served model")
             if not isinstance(choice.get("message"), dict):
                 raise ResponseRecoveryError("endpoint returned no message")
             try:

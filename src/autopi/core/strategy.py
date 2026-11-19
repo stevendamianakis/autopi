@@ -134,8 +134,6 @@ class StrategyEngine(TaxonomyEngine):
     def reset(self, user_task_prompt="", injection_goal=""):
         self._user_task_prompt = user_task_prompt or ""
         self.reset_for_new_task()
-        if self._resume_pending:
-            raise ValueError("TAX_RESUME_AFTER_ATTEMPT cannot reconstruct arbitrary strategy history; use --resume for completed points")
         self._attempt_meta = []
         self._sources = []
         self._seed_source = None

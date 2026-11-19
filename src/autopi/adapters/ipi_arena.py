@@ -266,6 +266,19 @@ class IPIArenaAdapter:
             raise ValueError(f"unknown IPI Arena categories: {sorted(self._categories - known_categories)}")
         if not self._behaviors:
             raise ValueError("no IPI Arena scenarios found; check the installed benchmark data or --ipi-behaviors-path")
+        # As IPI Arena's own BenchmarkRunner.run(): a selected browser scenario needs playwright.
+        # Stop at setup (a dry run included) rather than fail every attempt in the infrastructure.
+        browser = sorted(bid for bid, b in self._behaviors.items() if b.get("html_template")
+                         and (not self._categories or b.get("category", "") in self._categories))
+        if browser:
+            try:
+                import playwright  # noqa: F401
+            except ImportError:
+                raise ValueError(
+                    f"IPI Arena browser scenarios need playwright, which is not installed ({len(browser)} "
+                    f"selected, e.g. {browser[0]}). Install it with: pip install -e 'benchmarks/ipi_arena[browser]' "
+                    "&& python -m playwright install chromium, or leave them out with --suite tool --suite coding"
+                ) from None
 
     def iter_points(self) -> Iterator[AttackPoint]:
         for bid, behavior in self._behaviors.items():

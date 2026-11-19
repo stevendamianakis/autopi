@@ -325,8 +325,12 @@ class TaxonomyEngine:
         self._last_para_raw: str = ""
         self._seq_transcript: dict[str, list] = {}
         self._cur_seq_signals: list[str] = []
-        self._resume_after_attempt = 0
-        self._resume_pending = False
+        if os.environ.get("TAX_RESUME_AFTER_ATTEMPT", "0").strip() not in ("", "0"):
+            # The process-level resume rebuilt a partial history it could not report or follow
+            # correctly; scenario-level --resume is the supported way to continue a run.
+            raise ValueError(
+                "TAX_RESUME_AFTER_ATTEMPT was removed in AutoPI 0.2.7; unset it and run the same "
+                "command with --resume, which repeats every scenario that was not finished")
 
     # ── properties ──
     @property
@@ -400,25 +404,12 @@ class TaxonomyEngine:
     # ── driver-facing API ──
     def reset(self, user_task_prompt: str = "", injection_goal: str = "") -> None:
         """Start a new (user_task, injection_task) pair. ``user_task_prompt`` is the agent's
-        current task text (used by modes 2/3); ``injection_goal`` is needed when a resume is
-        pending (``TAX_RESUME_AFTER_ATTEMPT``) and in no-seed mode, where the first candidate
-        is generated here. Check :attr:`has_candidate` before the first target call."""
+        current task text (used by modes 2/3); ``injection_goal`` is needed in no-seed mode,
+        where the first candidate is generated here. Check :attr:`has_candidate` before the
+        first target call."""
         self._user_task_prompt = user_task_prompt or ""
         self.reset_for_new_task()
-        if self._resume_pending:
-            if (not self.use_seed or self.sweep_before_seed_para or self.seed_only
-                    or self.paraphrase_reps > 0):
-                raise NotImplementedError(
-                    "TAX_RESUME_AFTER_ATTEMPT only reconstructs the default schedule: a seed, optional "
-                    "seed paraphrases, then one taxonomy sweep with no exploitation (-k 0). It cannot be "
-                    "combined with use_seed=False, sweep_before_seed_para, seed_only or paraphrase_reps>0; "
-                    "use --resume to skip completed scenarios instead"
-                )
-            self._restore_sweep_position(self._resume_after_attempt)
-            self._resume_pending = False
-            if not self.refine_template(injection_goal):
-                raise RuntimeError(f"Could not resume taxonomy sweep after attempt {self._resume_after_attempt}")
-        elif not self.use_seed:
+        if not self.use_seed:
             # No seed: the first candidate of the schedule is the first attempt. It is written
             # without context blending, because the engine has not seen a target run yet.
             self.has_candidate = self.refine_template(injection_goal)
@@ -482,8 +473,6 @@ class TaxonomyEngine:
                 "status": "pending",
             }
         ] if self.use_seed else []
-        self._resume_after_attempt = max(0, int(os.environ.get("TAX_RESUME_AFTER_ATTEMPT", "0")))
-        self._resume_pending = self._resume_after_attempt > 0
 
     # ── adaptive mechanisms ──
     def _usertask_prompt_text(self) -> str:
@@ -766,39 +755,6 @@ class TaxonomyEngine:
                          raw=(getattr(self, "_last_para_raw", "") or "")[:300], stack_level=_lvl)
         return False
 
-    def _restore_sweep_position(self, completed_attempts: int) -> None:
-        """Resume the judge-free taxonomy sweep after a transport-aborted process: the seed
-        and seed-paraphrase phases are assumed already evaluated; placeholder history
-        preserves the budget and accounting without repeating paid target calls."""
-        completed_attempts = min(completed_attempts, self.max_attempts)
-        seed_paras = min(self.seed_paraphrase_reps, max(0, completed_attempts - 1))
-        taxonomy_count = min(self.num_combos, max(0, completed_attempts - 1 - seed_paras))
-        self._seed_para_try = seed_paras
-        self._combo_idx = taxonomy_count
-        self._phase = "taxonomy"
-        self._failed_templates = [
-            f"<resumed failed target attempt {attempt}>" for attempt in range(1, completed_attempts + 1)
-        ]
-        self._attempt_meta = [
-            {"attempt": 1, "phase": "seed", "sequence_id": "SEED", "sequence_name": self.seed_name,
-             "stack_level": 0, "template": None, "status": "failed_resumed"}
-        ]
-        for offset in range(seed_paras):
-            self._attempt_meta.append(
-                {"attempt": offset + 2, "phase": "seed_paraphrase", "sequence_id": "PARA:SEED",
-                 "sequence_name": "paraphrase_of_seed", "stack_level": 0, "template": None, "status": "failed_resumed"}
-            )
-        for offset, combo in enumerate(self._combos[:taxonomy_count]):
-            self._attempt_meta.append(
-                {"attempt": seed_paras + offset + 2, "phase": "taxonomy", "sequence_id": _combo_id(combo),
-                 "sequence_name": _combo_name(combo), "stack_level": len(combo), "template": None,
-                 "status": "failed_resumed"}
-            )
-        print(
-            f"[TAXREFINER] resuming after target attempt {completed_attempts}: "
-            f"seed paraphrases={seed_paras}, taxonomy candidates={taxonomy_count}"
-        )
-
     # ── logging ──
     def save_template_log(
         self,
@@ -857,7 +813,6 @@ class TaxonomyEngine:
             "awareness_mode": self.awareness_mode,
             "usertask_aware": self.usertask_aware,
             "newtask_aware": self.newtask_aware,
-            "resumed_after_attempt": self._resume_after_attempt or None,
             "max_attempts": self.max_attempts,
             "attempt_budget": self.attempt_budget,
             "total_attempts": self._attempts_recorded(),

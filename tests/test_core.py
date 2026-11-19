@@ -1234,3 +1234,61 @@ def test_empty_target_thinking_env_does_not_override_the_alias(monkeypatch, tmp_
                                         "--no-legitimize", "--logdir", str(tmp_path)])
     assert out.exit_code == 0, out.output
     assert "target_thinking=on" in out.output             # the alias setting is kept, not forced off
+
+
+# ── 0.2.7: Anthropic sampling on IPI Arena, removed process resume, wrapped refusals, playwright ──
+
+def test_ipi_arena_anthropic_calls_carry_no_sampling_parameters(monkeypatch):
+    """IPI Arena's client sends temperature 0 on every target, judge and WorldSim call; Claude
+    4.7 and later reject it on the OpenAI-compatible API, so it is left out for anthropic."""
+    pytest.importorskip("ipi_arena_bench")
+    from autopi.adapters.ipi_arena import _build_vllm_client
+    from autopi.models.endpoints import ModelEndpoint
+
+    sent = _ipi_requests(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-value")
+    monkeypatch.setenv("GOOGLE_API_KEY", "offline-test-value")
+    for provider, model in (("anthropic", "claude-x"), ("google", "gemini-x")):
+        client = _build_vllm_client("x", endpoint=ModelEndpoint(provider, model))
+        client.chat([{"role": "user", "content": "hi"}])                                   # target and judge
+        client.chat([{"role": "user", "content": "hi"}], temperature=0.0, max_tokens=2048)  # WorldSim
+    anthropic_calls, google_calls = sent[:2], sent[2:]
+    assert all("temperature" not in call and "top_p" not in call for call in anthropic_calls)
+    assert [call["temperature"] for call in google_calls] == [0.0, 0.0]   # other providers unchanged
+
+
+def test_the_removed_process_resume_is_refused_with_a_resume_hint(monkeypatch):
+    from autopi.core.strategy import StrategyEngine
+
+    monkeypatch.setenv("TAX_RESUME_AFTER_ATTEMPT", "4")
+    with pytest.raises(ValueError, match="--resume"):
+        _engine(monkeypatch, max_sequences=3)
+    with pytest.raises(ValueError, match="--resume"):
+        StrategyEngine({"budget": 3, "blocks": [{"kind": "seed"}]}, refiner_model="stub", awareness_mode=3,
+                       use_judge=False, use_context=False, use_legitimize=False)
+    monkeypatch.setenv("TAX_RESUME_AFTER_ATTEMPT", "0")            # unset or 0 is fine
+    _engine(monkeypatch, max_sequences=3)
+
+
+def test_a_refusal_inside_the_delimiters_is_skipped_in_mode_3(monkeypatch):
+    refusal = "[TEMPLATE_START] I cannot help with this request. [TEMPLATE_END]"
+    assert P._extract_template_seq(refusal, False, require_placeholder=False) is None
+    adapter = _ScriptedAdapter()
+    run_attack(adapter, _engine(monkeypatch, refiner=lambda *args, **kwargs: refusal, max_sequences=3),
+               verbose=False)
+    assert len(adapter.injections) == 1                         # only the seed reached the target
+    assert "I cannot help" not in " ".join(adapter.injections)
+
+
+def test_ipi_arena_stops_at_setup_when_a_selected_browser_scenario_lacks_playwright(monkeypatch):
+    pytest.importorskip("ipi_arena_bench")
+    import sys
+
+    from autopi.adapters import ipi_arena as I
+
+    monkeypatch.setitem(sys.modules, "playwright", None)           # "import playwright" now fails
+    for selection in ({"behaviors": ["browser-gmail-forward-injection"]}, {}):   # one browser scenario, or all 41
+        with pytest.raises(ValueError, match="playwright"):
+            I.IPIArenaAdapter("vllm:8000:m", verbose=False, **selection)
+    I.IPIArenaAdapter("vllm:8000:m", behaviors=["book-hotel"], verbose=False)          # no browser scenario
+    I.IPIArenaAdapter("vllm:8000:m", categories=["tool", "coding"], verbose=False)     # browser ones left out

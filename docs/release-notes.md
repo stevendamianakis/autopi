@@ -1,5 +1,18 @@
 # Release notes
 
+## Version 0.2.7
+
+A bug-fix release. IPI Arena's own scoring and AgentDojo's own execution and
+scoring are unchanged, and no bundled benchmark source changed.
+
+| Area | Fix |
+|---|---|
+| Anthropic models on IPI Arena | IPI Arena's client sends temperature 0 on every target, judge and WorldSim call, and Claude 4.7 and later reject a temperature below 1 on the OpenAI-compatible API (HTTP 400), so every call failed. For an `anthropic` endpoint AutoPI now leaves `temperature`, `top_p` and `top_k` out of those requests, as on its other Anthropic requests, and the API's default sampling applies |
+| Process-level resume | The undocumented `TAX_RESUME_AFTER_ATTEMPT` variable is removed and refused with a pointer to `--resume`. It reported a resumed success at the wrong attempt (so ASR@k was wrong), crashed when seed paraphrases were still to come, and could repeat a finished attempt. Scenario logs no longer have the `resumed_after_attempt` field |
+| Refusals inside the delimiters | A generated line that opens like a refusal ("I can't…", "I'm sorry…") is skipped also when it is written inside the template delimiters, as an undelimited refusal already was. In mode 3 such a line used to reach the target and use attempts. A genuine line that opens this way is skipped too |
+| IPI Arena browser scenarios | Selecting a browser scenario without playwright installed stops the run at setup, a dry run included, as IPI Arena's own runner does. Before, every attempt failed in the infrastructure while the generator was still called, and the scenario was left out of ASR |
+| Raw-token recovery | A token id outside the configured tokenizer's vocabulary is an error. The tokenizer used to drop it silently, losing generated text |
+
 ## Version 0.2.6
 
 A bug-fix release. IPI Arena's own scoring and AgentDojo's own execution and

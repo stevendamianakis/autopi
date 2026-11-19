@@ -137,6 +137,13 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                 kwargs[key] = value
         for key in endpoint.omit_parameters:
             kwargs.pop(key, None)
+        if endpoint.provider == "anthropic":
+            # IPI Arena's client always sends temperature 0. Through the OpenAI-compatible API,
+            # Claude 4.7 and later reject a temperature below 1 and any top_p but the default
+            # (HTTP 400), so sampling parameters are left out, as on AutoPI's other Anthropic
+            # requests, and the API's default sampling applies.
+            for key in ("temperature", "top_p", "top_k"):
+                kwargs.pop(key, None)
         if "messages" in kwargs:
             kwargs["messages"] = _with_tool_call_extras(kwargs["messages"], tool_call_extras)
             if endpoint.provider == "google":

@@ -1,8 +1,8 @@
-# Release validation — version 0.2.6, November 19, 2026
+# Release validation — version 0.2.7, November 19, 2026
 
 Validated locally on Python 3.11.18, macOS arm64.
 
-- **222 tests passed**, covering AutoPI and both bundled benchmark test suites.
+- **227 tests passed**, covering AutoPI and both bundled benchmark test suites.
   The AutoPI tests also passed on Python 3.13.16 against the built wheels.
 - The lint check passed on the source and the tests.
 - Offline AgentDojo checks compared the adapter's selected slots and native

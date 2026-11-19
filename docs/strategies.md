@@ -63,7 +63,9 @@ and accumulated diagnostic feedback. Repeating a sweep creates fresh source
 lines, tracked by their originating block and target attempt.
 
 Only actual target runs consume the attempt budget. Invalid, empty or refused
-generator outputs are logged and skipped. A generator that cannot be reached (a
+generator outputs are logged and skipped. A line that opens like a refusal ("I
+can't…", "I'm sorry…") counts as one, also inside the template delimiters, so a
+written line that opens this way is skipped too. A generator that cannot be reached (a
 connection failure, timeout, rate limit or server error after the endpoint's
 retries) stops the run before the scenario is logged, so `--resume` repeats it.
 Infrastructure failures consume budget but never become failed source lines or

@@ -114,8 +114,10 @@ autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
 
 IPI Arena has 41 scenarios: 18 tool use, 15 coding and 8 browser. A scenario counts as broken only when
 every one of its criteria passes, and `--ipi-ignore-concealment` selects an action-only metric instead.
-The target uses native tool calls, and browser scenarios need an image-capable target. The benchmark
-ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy without a seed block.
+The target uses native tool calls, and browser scenarios need an image-capable target and playwright; a
+run that selects them without playwright stops at setup, so leave them out with `--suite tool --suite coding`
+if needed. The benchmark ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy
+without a seed block.
 
 </details>
 

@@ -34,8 +34,12 @@ on every model, so an `anthropic` alias cannot set them and requests use the
 API's default sampling. An Anthropic AgentDojo target allows 1,024 output tokens
 unless its alias sets `max_tokens`; for a model that thinks by default, the
 thinking counts toward that cap. IPI Arena
-uses native tools via the provider's OpenAI-compatible API. Provider compatibility
-layers may differ from native APIs; record the interface in your results.
+uses native tools via the provider's OpenAI-compatible API. Its client sends
+temperature 0 on every target, judge and WorldSim call; Claude 4.7 and later reject
+a temperature below 1 there, so for an `anthropic` endpoint AutoPI leaves sampling
+parameters out of those requests too and they use the API's default sampling.
+Provider compatibility layers may differ from native APIs; record the interface in
+your results.
 Gemini 3 and later reject a request whose tool calls lack the thought signatures
 they came with, and both benchmarks rebuild tool calls without them, so AutoPI's
 clients put each signature back on its call: through AgentDojo's Gemini client and
@@ -99,7 +103,8 @@ To enable it, set `tokenizer_path` for the affected model alias,
 or pass `--target-tokenizer FILE` / `--refiner-tokenizer FILE`. Install the
 `recovery` extra. Recovery requires thinking off and non-streaming text requests.
 For an AgentDojo target it also requires `tool_mode: prompted`. The server must
-support returning token ids in each choice. Missing/invalid ids cause an error;
+support returning token ids in each choice. Missing/invalid ids, and ids outside
+the tokenizer's vocabulary, cause an error;
 AutoPI never falls back to the stripped text or invents tool arguments. Original
 responses and recovered text are saved when tracing is enabled.
 
