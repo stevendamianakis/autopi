@@ -7,8 +7,8 @@ authors:
     given-names: Stavros
   - family-names: Psounis
     given-names: Konstantinos
-version: 0.2.8
-date-released: 2026-11-19
+version: 0.3.0
+date-released: 2026-11-20
 license: MIT
 repository-code: "https://github.com/stevendamianakis/autopi"
 url: "https://stevendamianakis.github.io/autopi-site/"

@@ -8,11 +8,15 @@ import click
 
 from autopi.core.taxonomy import SWEEP_ORDERS
 from autopi.harness.runner import run_attack
+from autopi.models.endpoints import TOOL_CALLING_MODES
 from autopi.models.registry import (
     TARGET_THINKING_CHOICES,
     resolve_target_max_tokens,
     resolve_target_thinking,
 )
+
+# Mirrors autopi.adapters.agentdojo.PLACEMENT_MODES (kept here so --help needs no agentdojo import).
+INJECTION_PLACEMENTS = ("agentdojo", "all", "first")
 
 
 def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[str] | None,
@@ -21,7 +25,8 @@ def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[
                    ipi_ignore_concealment: bool = False, target_thinking: str | None = None,
                    target_max_tokens: int | None = None, ipi_behaviors_path: str | None = None,
                    target_endpoint=None, judge_endpoint=None, worldsim=None, worldsim_endpoint=None,
-                   journal=None, ipi_max_steps=None, ipi_harness_retries=2):
+                   journal=None, ipi_max_steps=None, ipi_harness_retries=2,
+                   injection_placement: str = "agentdojo"):
     if benchmark == "agentdojo":
         from autopi.adapters.agentdojo import AgentDojoAdapter
 
@@ -29,7 +34,7 @@ def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[
             target, benchmark_version=benchmark_version or "v1.2.2", suites=suites or None,
             user_tasks=user_tasks or None, injection_tasks=injection_tasks or None, defense=defense,
             target_thinking=target_thinking, target_max_tokens=target_max_tokens,
-            endpoint=target_endpoint, journal=journal,
+            endpoint=target_endpoint, journal=journal, injection_placement=injection_placement,
         )
     if benchmark == "ipiarena":
         from autopi.adapters.ipi_arena import IPIArenaAdapter
@@ -113,6 +118,17 @@ def main() -> None:
 @click.option("--target-max-tokens", default=None, type=int,
               help="Output cap of a locally served AgentDojo target (default: no cap). "
                    "Env: AUTOPI_TARGET_MAX_TOKENS.")
+@click.option("--tool-calling", default=None, type=click.Choice(list(TOOL_CALLING_MODES)),
+              help="How an AgentDojo target calls tools: native (default; the provider's or server's "
+                   "tool-calling API, as AgentDojo runs models with tool support) or prompted (AgentDojo's "
+                   "LocalLLM: tools listed in the system prompt, <function=...> text parsed from the reply, "
+                   "tool results sent back as JSON). Overrides the target alias's tool_mode. "
+                   "Env: AUTOPI_TOOL_CALLING.")
+@click.option("--injection-placement", default=None, type=click.Choice(list(INJECTION_PLACEMENTS)),
+              help="AgentDojo: where the injection goes. agentdojo (default): the injection vectors "
+                   "AgentDojo's own attacks fill, the ones the user task reads; all: every injection vector "
+                   "of the suite; first: only the first of AgentDojo's vectors. "
+                   "Env: AUTOPI_INJECTION_PLACEMENT.")
 @click.option("--ipi-behaviors-path", default=None,
               help="IPI Arena: directory of scenario files (default: the installed benchmark's own). "
                    "Env: IPI_ARENA_BEHAVIORS_PATH.")
@@ -130,7 +146,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         no_judge, no_context, no_legitimize, target_thinking, target_max_tokens, ipi_behaviors_path,
         ipi_ignore_concealment, taxonomy_path, limit, shard, num_shards, logdir, resume,
         worldsim, models_config, strategy, target_tokenizer, refiner_tokenizer, trace_dir, dry_run,
-        ipi_max_steps, ipi_harness_retries) -> None:
+        ipi_max_steps, ipi_harness_retries, tool_calling, injection_placement) -> None:
     """Run the taxonomy attack against a benchmark and print the ASR summary."""
     import hashlib
     import re
@@ -149,6 +165,25 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         raise click.UsageError("--num-shards must be positive and 0 <= --shard < --num-shards")
     if benchmark == "ipiarena" and (defense or benchmark_version or (injection_tasks and set(injection_tasks) != {"ipi"})):
         raise click.UsageError("IPI Arena uses scenario ids via --user-task and its own scoring; AgentDojo defense/version/task options do not apply")
+    if benchmark == "ipiarena":
+        # IPI Arena's own client always calls tools natively and places each scenario's injection
+        # itself; the AgentDojo options are refused on the command line and ignored from the env.
+        context = click.get_current_context()
+        given = [f"--{name.replace('_', '-')}" for name in ("tool_calling", "injection_placement")
+                 if context.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE]
+        if given:
+            raise click.UsageError(f"{' and '.join(given)} {'apply' if len(given) > 1 else 'applies'} to "
+                                   "AgentDojo; IPI Arena calls tools natively and places the injection where "
+                                   "each scenario defines it")
+        tool_calling = injection_placement = None
+    else:
+        tool_calling = tool_calling or os.environ.get("AUTOPI_TOOL_CALLING") or None
+        injection_placement = injection_placement or os.environ.get("AUTOPI_INJECTION_PLACEMENT") or "agentdojo"
+        if tool_calling is not None and tool_calling not in TOOL_CALLING_MODES:
+            raise click.UsageError(f"AUTOPI_TOOL_CALLING must be one of {', '.join(TOOL_CALLING_MODES)}; got {tool_calling!r}")
+        if injection_placement not in INJECTION_PLACEMENTS:
+            raise click.UsageError(f"AUTOPI_INJECTION_PLACEMENT must be one of {', '.join(INJECTION_PLACEMENTS)}; "
+                                   f"got {injection_placement!r}")
     strategy_data = None
     try:
         if strategy:
@@ -178,7 +213,8 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
             target_thinking = target_endpoint.thinking
         target_max_tokens = resolve_target_max_tokens(target_max_tokens)
         target_endpoint = override_endpoint(target_endpoint, thinking=target_thinking,
-                                            max_tokens=target_max_tokens, tokenizer_path=target_tokenizer)
+                                            max_tokens=target_max_tokens, tokenizer_path=target_tokenizer,
+                                            tool_mode=tool_calling)
         refiner_endpoint = override_endpoint(resolve_endpoint(refiner, catalog, role="refiner"),
                                              tokenizer_path=refiner_tokenizer)
         if refiner_endpoint.tokenizer_path:
@@ -200,7 +236,8 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                                  target_thinking=target_thinking, target_max_tokens=target_max_tokens,
                                  ipi_behaviors_path=ipi_behaviors_path, target_endpoint=target_endpoint,
                                  judge_endpoint=judge_endpoint, worldsim=worldsim, worldsim_endpoint=worldsim_endpoint,
-                                 journal=journal, ipi_max_steps=ipi_max_steps, ipi_harness_retries=ipi_harness_retries)
+                                 journal=journal, ipi_max_steps=ipi_max_steps, ipi_harness_retries=ipi_harness_retries,
+                                 injection_placement=injection_placement or "agentdojo")
         seed_template, seed_name = resolve_seed(
             no_seed=bool(no_seed), seed_source=seed_source or os.environ.get("TAX_SEED_SOURCE"),
             seed_file=seed_file or os.environ.get("TAX_SEED_FILE"),
@@ -232,7 +269,9 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         click.echo(f"[autopi] benchmark={benchmark} mode={mode} target={target} refiner={refiner} "
                    f"combos={engine.num_combos} budget/pt={min(max_attempts or engine.attempt_budget, engine.attempt_budget)} "
                    f"points={len(points)} target_thinking={target_thinking} "
-                   f"{'seed=' + engine.seed_name if engine.use_seed else 'no-seed'}" + (" no-early-stop" if not stop else ""))
+                   + (f"tool_calling={target_endpoint.tool_mode} placement={injection_placement} "
+                      if benchmark == "agentdojo" else "")
+                   + f"{'seed=' + engine.seed_name if engine.use_seed else 'no-seed'}" + (" no-early-stop" if not stop else ""))
         if dry_run:
             click.echo("Validated. No model calls were made.")
             return
@@ -251,6 +290,8 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                 "generator_limits": {"max_consecutive_refiner_errors": engine.max_consecutive_refiner_errors,
                                      "max_consecutive_unusable": engine.max_consecutive_unusable},
                 "stop_at_first_success": stop, "max_attempts": max_attempts, "defense": defense,
+                "tool_calling": target_endpoint.tool_mode if benchmark == "agentdojo" else "native",
+                "injection_placement": injection_placement if benchmark == "agentdojo" else "scenario",
                 "seed_sha256": hashlib.sha256((seed_template or "").encode()).hexdigest(),
                 "taxonomy_sha256": hashlib.sha256(Path(taxonomy_path or _BUNDLED_TAXONOMY).read_bytes()).hexdigest(),
                 "ipi_ignore_concealment": ipi_ignore_concealment, "ipi_max_steps": ipi_max_steps,

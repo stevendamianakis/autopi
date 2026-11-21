@@ -1,23 +1,23 @@
 # Copy to models.local.yaml and set the actual model ids/URLs before running.
 # API secrets are read from environment variables, never stored in this file.
 #
-# AgentDojo (prompted) and IPI Arena (native tools) need different server settings,
-# so the AgentDojo target/generator and the IPI Arena arena-* aliases below point at
-# two different servers. See docs/models.md, "Serving a vLLM target":
-#   - port 8000: serve WITHOUT --enable-auto-tool-choice (AgentDojo prompted target).
-#   - port 8001: serve WITH --enable-auto-tool-choice --tool-call-parser <model>
-#     (IPI Arena native tools).
+# Targets call tools natively (tool_mode: native, the default), as AgentDojo runs models
+# with tool support, so serve the model WITH the tool-call parser that matches it:
+#   vllm serve MODEL --enable-auto-tool-choice --tool-call-parser <parser for the model>
+# One such server can serve every alias below. For AgentDojo's prompted tools instead
+# (tool_mode: prompted, or --tool-calling prompted), point that target at a second server
+# started WITHOUT --enable-auto-tool-choice. See docs/models.md, "Serving a vLLM target".
 models:
   target:
     provider: openai-compatible
     model: YOUR_SERVED_MODEL_ID
     base_url: http://localhost:8000/v1
-    tool_mode: prompted
+    tool_mode: native
     thinking: "off"
     temperature: 0.0
     top_p: 0.9
     timeout: 240
-    # For endpoints whose native parser strips prompted-tool text:
+    # A prompted target (tool_mode: prompted) behind a parser that strips its tool text:
     # tokenizer_path: /path/to/exact/served/tokenizer.json
 
   generator:
@@ -33,7 +33,7 @@ models:
   arena-target:
     provider: openai-compatible
     model: YOUR_SERVED_MODEL_ID
-    base_url: http://localhost:8001/v1
+    base_url: http://localhost:8000/v1
     tool_mode: native
     thinking: "off"
     temperature: 0.0
@@ -43,7 +43,7 @@ models:
   arena-judge:
     provider: openai-compatible
     model: YOUR_SERVED_JUDGE_MODEL_ID
-    base_url: http://localhost:8001/v1
+    base_url: http://localhost:8000/v1
     tool_mode: native
     thinking: "off"
     timeout: 1200

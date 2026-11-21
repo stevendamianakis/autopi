@@ -73,6 +73,11 @@ autopi run --benchmark agentdojo \
   --logdir runs/agentdojo-full
 ```
 
+The target calls tools natively by default, as AgentDojo runs models with tool support, so start vLLM
+with `--enable-auto-tool-choice` and the `--tool-call-parser` that matches the model (see
+[Model configuration](docs/models.md#serving-a-vllm-target)). `--tool-calling prompted` switches to
+AgentDojo's prompted text format instead, for a server without a tool-call parser.
+
 Add `--dry-run` to check the settings and count the scenarios without calling a model. A run with
 `--logdir` writes its resolved settings (a run manifest) and every attempt of every scenario to that
 folder. In the code, the generator is called the refiner.
@@ -132,6 +137,13 @@ without a seed block.
 - `--seed-file` uses another seed, and `--no-seed` opens with the sweep.
 - `--taxonomy-path` sweeps another taxonomy with the same file layout.
 - `--no-early-stop` keeps going after the first success, for coverage runs.
+- `--tool-calling` sets how an AgentDojo target calls tools: `native` (default) through the
+  provider's or server's tool-calling API, or `prompted`, AgentDojo's text format, with the tools
+  listed in the system prompt, `<function=...>` calls parsed from the reply and tool results sent
+  back as JSON.
+- `--injection-placement` sets where an AgentDojo injection goes: `agentdojo` (default) fills the
+  injection vectors AgentDojo's own attacks fill, the ones the user task reads; `all` fills every
+  injection vector of the suite; `first` fills only the first of AgentDojo's vectors.
 - `--shard` and `--num-shards` split a run across workers, and `--resume` continues an interrupted one.
 
 `autopi run --help` lists every option.
@@ -233,7 +245,10 @@ package versions validated locally.
 
 The paper's experiments ran with earlier versions of this code and the settings the paper lists.
 Results obtained with this release should state their models, server and parser versions, strategy
-and settings. The repository holds no model weights, credentials, server addresses or experiment outputs.
+and settings, including the tool calling and the injection placement. Version 0.3.0 changed the
+default tool calling of the short `vllm:` and `ollama:` target specs from prompted to native; pass
+`--tool-calling prompted` for the earlier behavior. The repository holds no model weights,
+credentials, server addresses or experiment outputs.
 
 ## Citation
 

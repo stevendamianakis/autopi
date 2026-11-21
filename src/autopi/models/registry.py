@@ -104,6 +104,23 @@ def apply_target_request_settings(client, *, thinking: str = "server", max_token
     return True
 
 
+def send_developer_as_system(client) -> None:
+    """AgentDojo's native client sends its system prompt with the OpenAI ``developer`` role.
+    A self-hosted model's chat template knows only ``system``: recent vLLM converts the role,
+    but other OpenAI-compatible servers may reject the message or render it as a turn the model
+    was never trained on. Send it as ``system``, as AgentDojo's prompted client does."""
+    create = client.chat.completions.create
+
+    def _create(*args, **kwargs):
+        messages = kwargs.get("messages")
+        if isinstance(messages, list) and any(isinstance(m, dict) and m.get("role") == "developer" for m in messages):
+            kwargs["messages"] = [dict(m, role="system") if isinstance(m, dict) and m.get("role") == "developer" else m
+                                  for m in messages]
+        return create(*args, **kwargs)
+
+    client.chat.completions.create = _create
+
+
 def _pipeline_clients(pipeline) -> list:
     """The distinct LLM clients inside an AgentDojo pipeline, nested tool loops included."""
     found, seen, stack = [], set(), [pipeline]
@@ -141,13 +158,16 @@ def build_target_pipeline(
         from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM
 
         if endpoint.tokenizer_path and endpoint.tool_mode != "prompted":
-            raise ValueError("target raw recovery requires tool_mode: prompted")
+            raise ValueError("target raw-token recovery (--target-tokenizer or tokenizer_path) reads "
+                             "prompted tool calls; add --tool-calling prompted (tool_mode: prompted)")
         url = endpoint.base_url
         if endpoint.provider == "ollama":
             url = url.rstrip("/") + "/v1"
         client = openai.OpenAI(api_key=endpoint.api_key(), base_url=url,
                                timeout=endpoint.timeout, max_retries=endpoint.retries)
         instrument_openai_client(client, endpoint, journal=journal)
+        if endpoint.tool_mode == "native" and endpoint.provider in {"openai-compatible", "ollama"}:
+            send_developer_as_system(client)
         llm_cls = LocalLLM if endpoint.tool_mode == "prompted" else OpenAILLM
         llm = llm_cls(client, endpoint.model)
         llm.name = endpoint.model

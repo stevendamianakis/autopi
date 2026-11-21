@@ -240,7 +240,8 @@ def test_journal_redacts_keys_and_writes_original_and_recovered_events(tmp_path,
 def test_example_catalog_is_valid():
     from pathlib import Path
     catalog = load_model_catalog(Path(__file__).resolve().parents[1] / "configs/models.example.yaml")
-    assert catalog["target"].tool_mode == "prompted"
+    # Since 0.3.0 both benchmarks' example targets call tools natively (one parser-enabled server).
+    assert catalog["target"].tool_mode == "native"
     assert catalog["arena-target"].tool_mode == "native"
 
 

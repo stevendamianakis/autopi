@@ -119,6 +119,9 @@ def load_model_catalog(path: str | Path | None) -> dict[str, ModelEndpoint]:
     return result
 
 
+TOOL_CALLING_MODES = ("native", "prompted")
+
+
 def resolve_endpoint(spec: str, catalog: dict[str, ModelEndpoint] | None = None, *, role: str = "target") -> ModelEndpoint:
     if catalog and spec in catalog:
         return catalog[spec]
@@ -128,16 +131,17 @@ def resolve_endpoint(spec: str, catalog: dict[str, ModelEndpoint] | None = None,
         if not url:
             raise ValueError("set OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_MODEL_ID, or use --models-config")
         return ModelEndpoint("openai-compatible", model, url)
+    # Short local specs call tools natively, as AgentDojo's own `vllm_parsed` pipeline does
+    # (before 0.3.0 they used prompted tools; `--tool-calling prompted` restores that). Both of
+    # AgentDojo's clients request temperature 0 themselves, so the target decodes greedily either way.
     if spec.startswith("vllm:"):
         parts = spec.split(":", 2)
         if len(parts) != 3 or not parts[1].isdigit() or not 0 < int(parts[1]) < 65536 or not parts[2]:
             raise ValueError("use vllm:PORT:MODEL_ID, or name an endpoint in --models-config")
-        return ModelEndpoint("openai-compatible", parts[2], f"http://localhost:{parts[1]}/v1",
-                             tool_mode="prompted", thinking="off")
+        return ModelEndpoint("openai-compatible", parts[2], f"http://localhost:{parts[1]}/v1", thinking="off")
     if spec.startswith("local:") or spec.startswith("ollama:"):
         return ModelEndpoint("ollama", spec.split(":", 1)[1],
-                             os.environ.get("OLLAMA_BASE_URL", f"http://localhost:{os.environ.get('LOCAL_LLM_PORT', '11434')}"),
-                             tool_mode="prompted")
+                             os.environ.get("OLLAMA_BASE_URL", f"http://localhost:{os.environ.get('LOCAL_LLM_PORT', '11434')}"))
     if spec == "local":
         # Bare "local" names no model and no port, so there is nothing to route to.
         raise ValueError("'local' names no model; use vllm:PORT:MODEL_ID, local:MODEL_ID (Ollama), "

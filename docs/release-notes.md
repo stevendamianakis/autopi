@@ -1,5 +1,25 @@
 # Release notes
 
+## Version 0.3.0
+
+Two AgentDojo options and one changed default. No bundled benchmark files changed,
+including AgentDojo's execution, injection and scoring and IPI Arena's simulator and
+scoring.
+
+| Area | Change |
+|---|---|
+| Tool calling | `--tool-calling native\|prompted` (env `AUTOPI_TOOL_CALLING`) sets how an AgentDojo target calls tools and overrides the alias's `tool_mode`. `native` uses AgentDojo's provider clients and the provider's or server's tool-calling API, as AgentDojo runs models with tool support; `prompted` uses AgentDojo's `LocalLLM` text format (tools in the system prompt, `<function=...>` calls, tool results as JSON). IPI Arena always calls tools natively: it refuses the flag and ignores the variable |
+| Default tool calling | The short `vllm:PORT:MODEL_ID`, `ollama:MODEL_ID` and `local:MODEL_ID` target specs now call tools natively; before, they used prompted tools. Serve such a target with `--enable-auto-tool-choice` and the `--tool-call-parser` for the model, or pass `--tool-calling prompted`. Named aliases keep their `tool_mode` (`native` unless set). For these specs both modes request temperature 0 |
+| System prompt role | A native target on an `openai-compatible` or `ollama` endpoint receives AgentDojo's system prompt with the `system` role rather than OpenAI's `developer` role, which self-hosted chat templates do not know (recent vLLM converts it; other servers may reject the request). Hosted `openai` targets keep `developer` |
+| Injection placement | `--injection-placement agentdojo\|all\|first` (env `AUTOPI_INJECTION_PLACEMENT`) sets where an AgentDojo injection goes: `agentdojo`, the default and the previous behavior, fills the injection vectors AgentDojo's own attacks fill, the ones the user task reads; `all` fills every injection vector of the suite; `first` fills only the first of AgentDojo's vectors. IPI Arena refuses the flag and ignores the variable |
+| Records | The run manifest records `tool_calling` and `injection_placement`, the setup line prints both, each attempt's result carries `injection_placement` next to `injection_slots`, and the placement trace event names the mode |
+| Raw-token recovery | A target tokenizer combined with native tool calls fails with an error that names `--tool-calling prompted` |
+| Serving guide | The parser example names `qwen3_coder` for Qwen3.5, Qwen3.6 and Qwen3-Coder (`hermes` is for Qwen2.5 and Qwen3). The example model config puts every alias on one parser-enabled server |
+
+Use a fresh output directory for 0.3.0. To repeat a run that used a short `vllm:`
+target spec before 0.3.0, add `--tool-calling prompted` and serve the target
+without a tool-call parser.
+
 ## Version 0.2.8
 
 Four fixes in AutoPI. No bundled benchmark files changed, including AgentDojo's

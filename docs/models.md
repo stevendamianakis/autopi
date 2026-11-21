@@ -13,7 +13,7 @@ The YAML `models` mapping supports these fields:
 | `model` | Exact served/API model id; required |
 | `base_url` | Optional custom API URL; required for generic compatible endpoints; `ollama` defaults to `OLLAMA_BASE_URL` or `http://localhost:11434` |
 | `api_key_env` | Name of an environment variable containing the credential |
-| `tool_mode` | AgentDojo: `prompted` text tools or `native` API tools |
+| `tool_mode` | AgentDojo: `native` API tools (default) or `prompted` text tools; `--tool-calling` overrides it |
 | `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`) |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
 | `temperature`, `top_p`, `max_tokens` | Optional decoding overrides (`anthropic`: `max_tokens` only) |
@@ -54,33 +54,69 @@ Any other service can be configured as `openai-compatible` with its own URL and
 API-key environment variable. Custom model implementations can also be supplied
 through the Python adapter interface.
 
-`--target-thinking` and `--target-max-tokens` override the target alias. Named
-aliases otherwise retain their own settings. Legacy `vllm:PORT:MODEL_ID` specs
-default to thinking off. Use `thinking: server` for endpoints that do not support
-the `chat_template_kwargs.enable_thinking` field. Hosted providers receive no
-template field by default. Token caps and thinking modes can change results.
+`--target-thinking`, `--target-max-tokens` and `--tool-calling` override the
+target alias. Named aliases otherwise retain their own settings. Legacy
+`vllm:PORT:MODEL_ID` specs default to thinking off. Use `thinking: server` for
+endpoints that do not support the `chat_template_kwargs.enable_thinking` field.
+Hosted providers receive no template field by default. Token caps, thinking modes
+and the tool calling can change results.
 
-`tool_mode: prompted` is for `openai-compatible` and `ollama` endpoints only; it
-parses `<function=...>` text with AgentDojo's own parser. Hosted `anthropic`,
-`google` and `openai` targets use their native tool API and reject `prompted`.
+## Tool calling (AgentDojo)
+
+An AgentDojo target calls tools in one of two ways, set by `--tool-calling` (env
+`AUTOPI_TOOL_CALLING`) or the alias's `tool_mode`:
+
+- **`native`, the default.** AgentDojo's own provider clients send the tool
+  definitions through the provider's or server's tool-calling API and read the
+  calls it parses, as AgentDojo runs every model with tool support (its
+  `vllm_parsed` pipeline for a local server). Tool results go back as tool
+  messages with their text unchanged. For `openai-compatible` and `ollama`
+  endpoints the system prompt is sent with the `system` role, which a
+  self-hosted model's chat template knows, rather than the OpenAI `developer`
+  role AgentDojo's client uses.
+- **`prompted`.** AgentDojo's `LocalLLM`: the tool definitions are written into
+  the system prompt, the model writes `<function=name>{...}</function>` text that
+  AgentDojo parses, and each tool result goes back as a JSON string
+  (`{"result": ...}`), so its newlines and quotes are escaped. For
+  `openai-compatible` and `ollama` endpoints only. Hosted `anthropic`, `google`
+  and `openai` targets use their native tool API and reject `prompted`.
+
+In both modes AgentDojo's client asks for temperature 0, unless the alias sets its
+own (Anthropic targets send none, see above). The short `vllm:PORT:MODEL_ID` and
+`ollama:MODEL_ID` specs call tools natively since 0.3.0 (prompted before); named
+aliases keep their `tool_mode`, `native` unless set. IPI Arena always calls tools
+natively through its own client, so `--tool-calling` applies to AgentDojo only.
+
+`--injection-placement` (env `AUTOPI_INJECTION_PLACEMENT`) sets where an AgentDojo
+injection goes: `agentdojo` (default) fills the injection vectors AgentDojo's own
+attacks fill, the ones the user task's ground-truth run reads; `all` fills every
+injection vector of the suite, including ones the user task never reads; `first`
+fills only the first of AgentDojo's vectors, in the suite's vector order. IPI Arena
+places each scenario's injection where the scenario defines it.
 
 ## Serving a vLLM target
 
-The two benchmarks need different server settings, so serve them separately (or
-restart between runs); do not point an AgentDojo prompted target and an IPI Arena
-native target at the same server.
+- **Native tool calls** (AgentDojo's default and IPI Arena) send the tools with
+  `tool_choice: auto`, so the server must parse tool calls: launch vLLM with
+  `--enable-auto-tool-choice` and the `--tool-call-parser` that matches the
+  model's chat template, for example `hermes` for Qwen2.5 and Qwen3, and
+  `qwen3_coder` for Qwen3.5, Qwen3.6 and Qwen3-Coder (the model card or the vLLM
+  recipe names it). With a wrong parser the model's calls stay unparsed text, the
+  agent never calls a tool and every scenario fails, so check that a smoke run
+  makes tool calls. One such server serves both benchmarks.
+- **AgentDojo prompted target** (`--tool-calling prompted`) expects the model's
+  `<function=...>` text in `message.content` and parses it itself. A server-side
+  tool-call parser can remove that text, so an AgentDojo prompted target must run
+  **without** `--enable-auto-tool-choice`, or with raw-token recovery (below) to
+  read the generated tokens before the parser. A prompted target whose reply comes
+  back with the server's own parsed tool calls and no `<function=...>` text
+  produces no tool calls and silently scores zero; serve it without the tool-call
+  parser, and do not point it at the server of a native target.
 
-- **IPI Arena** sends native tool calls with `tool_choice: auto`, so the server
-  must parse tool calls: launch vLLM with `--enable-auto-tool-choice` and a
-  `--tool-call-parser` for the model (for example `hermes` for Qwen). Use
-  `tool_mode: native`.
-- **AgentDojo prompted target** expects the model's `<function=...>` text in
-  `message.content` and parses it itself. A server-side tool-call parser removes
-  that text, so an AgentDojo prompted target must run **without**
-  `--enable-auto-tool-choice`, or with raw-token recovery (below) to read the
-  generated tokens before the parser. A prompted target whose reply comes back
-  with the server's own parsed tool calls and no `<function=...>` text produces no
-  tool calls and silently scores zero; serve it without the tool-call parser.
+The generator's requests carry no tools. If a server's tool-call parser still
+rewrites tool-like text in such replies, the generated injections lose that text;
+check them in the traces, and serve the generator without a parser or enable
+recovery (below).
 
 An AgentDojo prompted target also has its `<think>...</think>` reasoning removed
 from the reply before tool parsing, so a thinking model does not have a
@@ -104,7 +140,8 @@ skips special tokens, as the server's own text does.
 To enable it, set `tokenizer_path` for the affected model alias,
 or pass `--target-tokenizer FILE` / `--refiner-tokenizer FILE`. Install the
 `recovery` extra. Recovery requires thinking off and non-streaming text requests.
-For an AgentDojo target it also requires `tool_mode: prompted`. The server must
+For an AgentDojo target it also requires prompted tool calling (`--tool-calling prompted`
+or `tool_mode: prompted`). The server must
 support returning token ids in each choice. Missing/invalid ids, and ids outside
 the tokenizer's vocabulary, cause an error;
 AutoPI never falls back to the stripped text or invents tool arguments. Original

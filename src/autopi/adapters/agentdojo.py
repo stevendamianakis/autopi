@@ -1,4 +1,5 @@
-"""AgentDojo adapter using native task-visible slots, execution and scoring."""
+"""AgentDojo adapter: AgentDojo's own execution and scoring, with a selectable injection
+placement whose default is AgentDojo's (the task-visible injection vectors)."""
 
 from __future__ import annotations
 
@@ -6,6 +7,13 @@ from typing import Iterator
 
 from autopi.adapters.base import AdapterInfraError, AttackPoint, RunResult
 from autopi.core.seeds import IMPORTANT_INSTRUCTIONS_SEED, IMPORTANT_INSTRUCTIONS_SEED_NAME
+
+# Where the injection goes in a scenario's environment:
+#   agentdojo  the injection vectors AgentDojo's own attacks fill: the ones the user task's
+#              ground-truth run reads (``get_injection_candidates``). The default.
+#   all        every injection vector of the suite, including ones the user task never reads.
+#   first      only the first of AgentDojo's vectors, in the suite's vector order.
+PLACEMENT_MODES = ("agentdojo", "all", "first")
 
 
 def _to_plain_messages(messages) -> list[dict]:
@@ -34,6 +42,7 @@ class AgentDojoAdapter:
     benchmark version); ``injection_tasks`` / ``user_tasks`` optionally narrow the pairs."""
 
     checker_kind = "state"
+    injection_placement = "agentdojo"
     # AgentDojo ships the important-instructions attack; it is this benchmark's default seed
     # See autopi.core.seeds.
     default_seed_template = IMPORTANT_INSTRUCTIONS_SEED
@@ -53,15 +62,20 @@ class AgentDojoAdapter:
         target_max_tokens: int | None = None,
         endpoint=None,
         journal=None,
+        injection_placement: str = "agentdojo",
     ) -> None:
         # Imported lazily so `import autopi` never hard-requires agentdojo.
         from agentdojo.task_suite.load_suites import get_suites
 
         from autopi.models.registry import build_target_pipeline
 
+        if injection_placement not in PLACEMENT_MODES:
+            raise ValueError(f"injection placement must be one of {', '.join(PLACEMENT_MODES)}; "
+                             f"got {injection_placement!r}")
         self.name = name
         self.journal = journal
         self.benchmark_version = benchmark_version
+        self.injection_placement = injection_placement
         # Thinking mode and output cap of a locally served target (default: thinking off, no cap).
         self._pipeline = build_target_pipeline(
             target, defense=defense, target_thinking=target_thinking, target_max_tokens=target_max_tokens,
@@ -104,6 +118,13 @@ class AgentDojoAdapter:
                         extra={"_ut": ut, "_it": it},
                     )
 
+    def injection_slots(self, point: AttackPoint) -> list[str]:
+        """The injection vectors this scenario's payload is written into (see PLACEMENT_MODES)."""
+        if self.injection_placement == "all":
+            return list(self._suites[point.suite].get_injection_vector_defaults())
+        slots = list(self._selectors[point.suite].get_injection_candidates(point.extra["_ut"]))
+        return slots[:1] if self.injection_placement == "first" else slots
+
     def run(self, point: AttackPoint, injection_text: str) -> RunResult:
         from agentdojo.agent_pipeline.errors import AbortAgentError
         from agentdojo.logging import Logger
@@ -133,7 +154,7 @@ class AgentDojoAdapter:
 
         pipeline = RecordingPipeline()
         try:
-            slots = list(self._selectors[point.suite].get_injection_candidates(point.extra["_ut"]))
+            slots = self.injection_slots(point)
             if not slots:
                 raise AdapterInfraError("no_native_injection_slots")
             # AgentDojo substitutes each slot into a double-quoted YAML scalar
@@ -144,7 +165,8 @@ class AgentDojoAdapter:
 
             injections = {slot: yaml_escape(injection_text) for slot in slots}
             if self.journal:
-                self.journal.emit("injection_placement", slots=slots, injection_text=injection_text)
+                self.journal.emit("injection_placement", placement=self.injection_placement, slots=slots,
+                                  injection_text=injection_text)
             with TraceLogger():
                 utility, security = self._suites[point.suite].run_task_with_pipeline(
                     pipeline, point.extra["_ut"], point.extra["_it"], injections,
@@ -157,7 +179,8 @@ class AgentDojoAdapter:
                 raise AdapterInfraError(kind) from exc
             raise
         return RunResult(utility=bool(utility), security=bool(security),
-                         messages=_to_plain_messages(pipeline.messages), info={"injection_slots": slots})
+                         messages=_to_plain_messages(pipeline.messages),
+                         info={"injection_slots": slots, "injection_placement": self.injection_placement})
 
 
 def _classify_infra_error(e: Exception) -> str | None:
