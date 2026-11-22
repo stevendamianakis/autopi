@@ -241,6 +241,32 @@ package versions validated locally.
 
 </details>
 
+## Recommended settings
+
+To compare a run with published results or with another method, run the target the way the
+benchmark runs it, and report every setting you change. AutoPI's defaults match these settings
+except for thinking on a `vllm:PORT:MODEL_ID` target and IPI Arena's scoring judge. To reproduce
+the paper, use the settings it lists instead.
+
+| Setting | Recommended | AutoPI default | How to set |
+|---|---|---|---|
+| Target temperature | 0, as both benchmarks request | 0 | `temperature` in the target alias |
+| Target reasoning effort | The model's default | None sent | `reasoning_effort` in the target alias |
+| Target thinking | The model's default, on or off | None sent (`server`), except that a `vllm:PORT:MODEL_ID` target runs with thinking off | `--target-thinking server`, or `thinking` in the alias |
+| Target output cap | The benchmark's | AgentDojo: no cap, but 1,024 tokens for Anthropic and 65,535 for Google targets. IPI Arena: 4,096 | `--target-max-tokens` (AgentDojo), or `max_tokens` in the alias |
+| Tool calling (AgentDojo) | Native | Native | `--tool-calling` |
+| Injection placement (AgentDojo) | `agentdojo`, the vectors the user task reads | `agentdojo` | `--injection-placement` |
+| Version and defense (AgentDojo) | v1.2.2, no defense | v1.2.2, no defense | `--benchmark-version`, `--defense` |
+| Scoring judge (IPI Arena) | IPI Arena's default model, `google/gemini-2.5-flash` | The target | `--judge` |
+| Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--worldsim` |
+| Generator and diagnostic judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--refiner` alias |
+
+- Anthropic targets accept no sampling parameters, so they run with the API's default sampling.
+- With thinking on, the reasoning counts toward the output cap, so a cap can cut an answer short.
+- Model cards often recommend sampling instead of greedy decoding. Qwen3.6's suggests temperature
+  1.0 with thinking on, and Qwen3's advises against greedy decoding there. Keep 0 to match the
+  benchmarks, and report it if you follow the card instead.
+
 ## Reproducibility
 
 The paper's experiments ran with earlier versions of this code and the settings the paper lists.
