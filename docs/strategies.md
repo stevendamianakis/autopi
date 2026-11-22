@@ -2,7 +2,8 @@
 
 Section 4 and Appendix G define a strategy as an ordered list of blocks, an
 attempt budget per scenario, and a stop rule. `--strategy FILE.yaml` implements
-that interface. Blocks can be omitted, reordered or repeated; each occurrence
+that interface. Blocks can be omitted, reordered or repeated, as long as at least
+one remains and each exploit block follows the block it refines; each occurrence
 has independent sweep parameters. A block's `id` must be unique and defaults to
 `block_1`, `block_2`, and so on.
 
