@@ -250,6 +250,34 @@ default tool calling of the short `vllm:` and `ollama:` target specs from prompt
 `--tool-calling prompted` for the earlier behavior. The repository holds no model weights,
 credentials, server addresses or experiment outputs.
 
+## Run-to-run variation
+
+Two runs with the same models, versions and settings can give different results. Judge a difference
+between runs against this variation.
+
+- The generator and its diagnostic judge sample, at temperature 0.7 unless the `--refiner` alias
+  sets another value, so each run can write different injections. Anthropic generators use the
+  API's default sampling.
+- Temperature 0 does not make a self-hosted target deterministic. Server load changes the batch a
+  request is computed in, which changes the order in which the GPU adds numbers, so the same
+  request can get a different answer, and a multi-step agent run carries the change forward. vLLM
+  does not guarantee identical outputs by default. Its opt-in batch-invariant mode
+  (`VLLM_BATCH_INVARIANT=1`, beta) targets this on supported GPUs and models. The GPU type and the
+  server and library versions change the numbers too, so report them.
+- Hosted APIs do not promise identical answers either, even at temperature 0. AutoPI's Anthropic
+  requests carry no sampling parameters and use the API's default sampling (see
+  [Model configuration](docs/models.md)). A provider can also update its serving or point an alias
+  at a newer snapshot.
+- The benchmarks add variation of their own. AgentDojo orders a new calendar event's participants
+  by Python's hash seed (set the `PYTHONHASHSEED` environment variable to fix the order), and it
+  reruns an agent that ends without a final answer, up to three attempts, keeping the changes the
+  earlier attempts made. IPI Arena's scoring judge and its tool simulator, WorldSim, are LLMs.
+- AutoPI's own random choices, a random sweep order or stack pool, use fixed seeds (`order_seed`
+  and `stack_seed`, 0 by default), so they repeat on the same Python version.
+
+Report how many runs you made and their confidence intervals (for example 95% Wilson intervals for
+ASR), and compare methods on the same scenarios with a paired test such as McNemar's.
+
 ## Citation
 
 The paper is on arXiv: [arXiv:2611.24313](https://arxiv.org/abs/2611.24313).
