@@ -32,7 +32,9 @@ feedback from an LLM judge.
   constructions a target falls for, not only how often it falls.
 - **Black-box and training-free.** AutoPI only sends inputs and reads the transcript and the outcome.
   There is nothing to train before the first attempt.
-- **Steerable.** A search strategy is a short YAML file of four building blocks in any order and number.
+- **Steerable.** A search strategy is a short YAML file of four kinds of blocks (seed, sweep, and an
+  exploit block for each), repeated and ordered freely, except that an exploit block must follow the
+  block it refines.
 - **Any benchmark, any model.** One engine runs on AgentDojo and IPI Arena through small adapters, and
   the target, the generator and the judge are plain LLM endpoints.
 
@@ -179,8 +181,9 @@ blocks:
     reps: 3
 ```
 
-Blocks can be omitted, reordered or repeated, and every sweep takes its own taxonomy subset, order,
-combination level and limit. See the [strategy guide](docs/strategies.md).
+Blocks can be omitted, reordered or repeated, as long as each exploit block follows the block it
+refines, and every sweep takes its own taxonomy subset, order, combination level and limit. See the
+[strategy guide](docs/strategies.md).
 
 ## Taxonomy
 
