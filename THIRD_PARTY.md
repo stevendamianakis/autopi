@@ -5,9 +5,12 @@ benchmarks. It contains no nested Git repositories or Git submodules.
 
 | Component | Source | Upstream revision | License |
 |---|---|---|---|
-| AgentDojo | https://github.com/ethz-spylab/agentdojo | `089ed468cf3ed0322acc66b0211f26d9d90dbf60` | [MIT](benchmarks/agentdojo/LICENSE), ETH Zurich |
-| IPI Arena | https://github.com/GraySwanAI/ipi_arena_os | `5e2e285910d581c97767195f1d113ef323f9ab07` | [MIT](benchmarks/ipi_arena/LICENSE), original authors |
+| AgentDojo | https://github.com/ethz-spylab/agentdojo | `089ed468cf3ed0322acc66b0211f26d9d90dbf60` | [MIT](benchmarks/agentdojo/LICENSE), Edoardo Debenedetti, Jie Zhang, Mislav Balunovic, Luca Beurer-Kellner, Marc Fischer, and Florian Tramèr |
+| IPI Arena | https://github.com/GraySwanAI/ipi_arena_os | `5e2e285910d581c97767195f1d113ef323f9ab07` | [MIT](benchmarks/ipi_arena/LICENSE), Gray Swan AI |
 | PIAtlas taxonomy | PIAtlas, arXiv:2610.24999 | Paper taxonomy used by AutoPI | Distributed as part of the AutoPI research code |
+
+Portions of AutoPI are derived from AgentDojo, so the root [LICENSE](LICENSE) also
+carries AgentDojo's copyright notice.
 
 Benchmark `src`, tests, metadata, README, license and required scenario data are
 included. Historical run outputs, notebook artifacts, environments and VCS
