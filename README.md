@@ -307,6 +307,17 @@ between runs against this variation.
 Report how many runs you made and their confidence intervals (for example 95% Wilson intervals for
 ASR), and compare methods on the same scenarios with a paired test such as McNemar's.
 
+## Getting help
+
+- **Understanding the code.** If a part of the code is unclear, we recommend reading the
+  [paper](https://arxiv.org/abs/2611.24313), which explains the method the code implements. The
+  guides in [`docs/`](docs/) cover the search strategies, the model settings and how to add a
+  benchmark.
+- **Issues and bugs.** If you run into an issue or a bug, we highly recommend debugging it with
+  [Claude Code](https://claude.com/claude-code) or any of Anthropic's
+  [Claude models](https://platform.claude.com/docs/en/models/overview). Claude Code works in your
+  clone of the repository, so it can read the code, rerun the failing command and run the tests.
+
 ## Citation
 
 The paper is on arXiv: [arXiv:2611.24313](https://arxiv.org/abs/2611.24313).
