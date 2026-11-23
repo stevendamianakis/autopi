@@ -317,6 +317,8 @@ ASR), and compare methods on the same scenarios with a paired test such as McNem
   [Claude Code](https://claude.com/claude-code) or any of Anthropic's
   [Claude models](https://platform.claude.com/docs/en/models/overview). Claude Code works in your
   clone of the repository, so it can read the code, rerun the failing command and run the tests.
+- **Anything else.** For any other issues, feel free to email Stavros Damianakis at
+  [sdamiana@usc.edu](mailto:sdamiana@usc.edu) anytime.
 
 ## Citation
 
