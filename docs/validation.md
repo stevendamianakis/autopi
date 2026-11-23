@@ -1,35 +1,58 @@
-# Release validation — version 0.3.0, November 20, 2026
+# Release validation — version 0.3.1, November 23, 2026
 
-- **296 tests passed** on Python 3.11.18 on macOS arm64: 222 AutoPI tests and the
+- **326 tests passed** on Python 3.11.18 on macOS arm64: 252 AutoPI tests and the
   74 tests of the bundled benchmarks.
-- The suite includes **24 new regression cases** for the two AgentDojo options:
-  native and prompted target clients and what each sends (tools and
-  `tool_choice`, the system prompt's role, temperature 0, thinking off, tool
-  definitions in the prompt), the short specs' native default, `--tool-calling`
-  and `AUTOPI_TOOL_CALLING` with their precedence over a named alias, the refusal
-  of prompted tools for hosted targets and of both options on IPI Arena,
-  raw-token recovery's error, all three placements checked against AgentDojo's
-  own slot choice for **all 97 user tasks** and run through AgentDojo's own
-  execution and scoring, and the run manifest. Removing the system-role mapping,
-  the native default or the `first` placement makes a test fail.
-- An end-to-end run against a local stub OpenAI-compatible server exercised the
-  CLI, AgentDojo's clients and real HTTP requests in four configurations (native
-  and prompted tools, and the `all` and `first` placements) on one banking
-  scenario. The native target received the suite's tools, the `system` role,
-  temperature 0 and thinking off, and tool results with the injected text
-  unchanged; the prompted target received the tools in its system prompt and
-  JSON tool results. The generator's requests were unchanged.
+- The suite includes **31 new regression cases** (`tests/test_release_031.py`) for
+  the review fixes. They cover:
+  - a target's reasoning kept out of the diagnostic judge's transcript, and a
+    Gemini target refused when it asks for its thoughts;
+  - `seed_exploit` running after an infrastructure-failed seed, with the legacy and
+    strategy engines agreeing;
+  - the stop when the target keeps failing: a target rejecting every request
+    stops within 25 attempts, scenario-specific errors such as a context overflow
+    never stop the run, and a rejected key, payment or model id stops it at once;
+  - content-policy refusals on AgentDojo, including a moderation HTTP 403, scored as
+    defended attempts through AgentDojo's own scoring, with an empty final reply;
+  - the generator: the test request before the first scenario, the HTTP 400
+    streak, content-policy refusals kept out of that streak, and rate-limit backoff
+    honouring `Retry-After`;
+  - reasoning tags kept as content for a thinking-off target (a tool call quoting
+    them stays intact), and a template that puts `<think>` in the prompt handled for
+    the generator and the judge;
+  - the OpenAI reasoning-model `max_completion_tokens` field and its `omit_parameters`
+    mapping, the Ollama generator's `options` merge, `OPENAI_BASE_URL` for the OpenAI
+    generator, the manifest's provider variables without credentials, and
+    `GEMINI_API_KEY`;
+  - strategy validation of repeated `order_ids`.
+- The test file needs 0.3.1's interfaces, so it does not import on 0.3.0. The bugs
+  it covers were reproduced separately with local scripts:
+  - the reasoning leak to the judge and the skipped seed exploit, on 0.3.0;
+  - five more on the first 0.3.1 draft, which they came from: a target rejecting
+    every request never stopping the run, a moderation 403 stopping it, a no-op
+    `omit_parameters: [max_tokens]`, a quoted closing tag destroying a tool call, and
+    a lone `</think>` left in a generator reply.
+- **End-to-end runs against local stub OpenAI-compatible servers** went through the
+  CLI, AgentDojo's clients and real HTTP requests:
+  - a target answering every request with HTTP 400 (a server without the
+    tool-call parser) stopped after 25 target and 25 generator requests;
+  - a working stub ran a capped banking scenario, and its log recorded the cap and
+    the effective budget;
+  - `--resume` without `--logdir` was rejected as a usage error.
 - Lint passed on AutoPI's source and tests.
 - All **193 files under `benchmarks/`** are unchanged from 0.2.8. No benchmark
   source, scenario, injection, scoring, simulator or validation file changed.
-- AutoPI's source distribution and wheel built successfully; the wheel carries
-  the 0.3.0 version and the bundled taxonomy.
-- Setup validation enumerated **949 AgentDojo scenarios** with each tool-calling
-  mode and placement, and **33 IPI Arena tool/coding scenarios**.
+- AutoPI's source distribution and wheel built successfully. The wheel carries the
+  0.3.1 version and the bundled taxonomy. The AutoPI tests pass on the **3.13 wheel**
+  with the provider SDKs installed; the AgentDojo- and IPI Arena-gated cases are
+  skipped there without the bundled benchmarks.
+- Setup validation enumerated **949 AgentDojo scenarios** and **33 IPI Arena
+  tool/coding scenarios**.
 
-Reproduce the test suite after installing the README's development dependencies:
+Reproduce the test suite after installing the README's development dependencies
+and the `build` package:
 
 ```bash
+python -m pip install build
 python -m pytest -q tests benchmarks/agentdojo/tests benchmarks/ipi_arena/tests --import-mode=importlib
 python -m ruff check src tests
 python -m build

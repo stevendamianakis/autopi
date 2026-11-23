@@ -11,8 +11,14 @@ The search engine imports no benchmark package. A benchmark adapter supplies:
 `security=True` means the **attacker's goal succeeded**. It does not mean the
 agent was secure. `messages` uses dictionaries with `role`, `content` and
 optional `tool_calls`. For errors that prevent fair scoring, raise
-`AdapterInfraError`. Such an attempt consumes budget but does not become failed
-generation history. Let programming/configuration errors propagate.
+`AdapterInfraError(kind, endpoint_error=...)`. Such an attempt consumes budget but
+does not become failed generation history. Set `endpoint_error=False` for an error
+tied to the scenario (a context overflow, a malformed model output, a broken
+environment) and leave it True for an error of the model endpoint (unreachable,
+failing, rejecting the request): only endpoint errors count toward the run's stop
+when the target keeps failing. Raise `BenchmarkModelConfigError` when a model
+rejects its key or model id, which stops the run at once. Let
+programming/configuration errors propagate.
 
 ```python
 from autopi.core.refiner import RefinerConfig
@@ -37,6 +43,10 @@ engine = StrategyEngine(
 summary = run_attack(my_adapter, engine, logdir="runs/my-benchmark")
 print(summary.format())
 ```
+
+`TaxonomyEngine` and `StrategyEngine` default to awareness mode 3 (the generator
+writes the goal directly) with no exploit variants, the same as the command line
+and the paper; pass `awareness_mode` and the exploit counts to change them.
 
 The CLI connects the two bundled benchmarks. New adapters can use the same
 Python entry point without changing the engine or importing the taxonomy into

@@ -255,11 +255,15 @@ def test_no_early_stop_paraphrases_only_the_failed_candidates(monkeypatch):
 def test_a_success_is_not_handed_to_the_judge_as_a_failure(monkeypatch):
     eng = _engine(monkeypatch)
     eng.reset("task", "GOAL-123")
-    msgs = [{"role": "assistant", "content": "ok"}]
-    eng.observe(msgs, True, False)
-    assert eng._last_failed_transcript() == msgs
-    eng.observe(msgs, True, True)
-    assert eng._last_failed_transcript() is None
+    failed = [{"role": "assistant", "content": "failed run"}]
+    eng._record("PARA:X", "paraphrase_of_X", "paraphrase", "a variant", "pending")
+    eng.observe(failed, True, False)
+    eng.mark_template_failed()
+    assert eng._chain_transcript("PARA:X", "X") == failed          # the line's own failed run
+    eng._record("PARA:X", "paraphrase_of_X", "paraphrase", "another variant", "pending")
+    eng.observe([{"role": "assistant", "content": "did it"}], True, True)
+    eng.mark_succeeded()
+    assert eng._chain_transcript("PARA:X", "X") is None            # a success is not a failure to explain
 
 
 def test_default_log_keeps_its_fields(monkeypatch, tmp_path):
@@ -791,40 +795,6 @@ def test_target_max_tokens_is_unset_by_default_and_ignores_the_legacy_variable(m
         R.resolve_target_max_tokens(0)
 
 
-def test_target_request_settings_reach_every_completion():
-    from autopi.models import registry as R
-
-    off = _FakeOpenAI()
-    assert R.apply_target_request_settings(off, thinking="off", max_tokens=2048)
-    off.chat.completions.create(model="m", messages=[])
-    off.chat.completions.create(model="m", messages=[], max_tokens=64,
-                                extra_body={"chat_template_kwargs": {"enable_thinking": True}, "x": 1})
-    first, second = off.calls
-    assert _thinking_of(first) is False and first["max_tokens"] == 2048
-    assert _thinking_of(second) is False and second["max_tokens"] == 64 and second["extra_body"]["x"] == 1
-
-    on = _FakeOpenAI()
-    R.apply_target_request_settings(on, thinking="on")
-    on.chat.completions.create(model="m", messages=[])
-    assert _thinking_of(on.calls[0]) is True and "max_tokens" not in on.calls[0]
-
-    server = _FakeOpenAI()
-    assert not R.apply_target_request_settings(server, thinking="server")
-    server.chat.completions.create(model="m", messages=[])
-    assert server.calls == [{"model": "m", "messages": []}]
-    assert not R.apply_target_request_settings(object(), thinking="off")
-
-
-def test_pipeline_clients_are_found_once_inside_nested_tool_loops():
-    from autopi.models import registry as R
-
-    client = _FakeOpenAI()
-    llm = type("LLM", (), {"client": client})()
-    loop = type("Loop", (), {"elements": [type("Exec", (), {})(), llm]})()
-    pipeline = type("Pipeline", (), {"elements": [type("Sys", (), {})(), llm, loop]})()
-    assert R._pipeline_clients(pipeline) == [client]
-
-
 def _ipi_requests(monkeypatch):
     """Record the requests the IPI Arena clients send, with no server."""
     from types import SimpleNamespace
@@ -916,19 +886,24 @@ def test_ipi_arena_worldsim_uses_the_model_asked_for():
 
 def test_ipi_arena_keeps_a_missing_worldsim_reply_apart_from_an_empty_one(monkeypatch):
     """Only a missing reply gets the benchmark's {"status": "success"} tool result, as in IPI
-    Arena itself. AutoPI removes a leaked reasoning block but does not turn the rest into a
-    missing reply."""
+    Arena itself. For an endpoint that may think, AutoPI removes a leaked reasoning block but
+    does not turn the rest into a missing reply. A thinking-off endpoint does not reason, so a
+    reasoning-like tag in its reply is content and is kept."""
     pytest.importorskip("ipi_arena_bench")
     from ipi_arena_bench.llm_client import ChatResponse, LLMClient, ToolCall
     from ipi_arena_bench.worldsim import simulate_tool_response
 
     from autopi.adapters import ipi_arena as I
+    from autopi.models.endpoints import ModelEndpoint
 
+    thinking = ModelEndpoint("openai-compatible", "m", "http://localhost:8000/v1", thinking="on")
     call = ToolCall("cancel_appointment", {"appointment_id": "X"}, id="c1")
-    for content, tool_result in [(None, '{"status": "success"}'), ("", ""), ("<think>plan</think>", ""),
-                                 ('<think>plan</think>{"ok": 1}', '{"ok": 1}')]:
+    for spec, endpoint, content, tool_result in [
+            ("m", thinking, None, '{"status": "success"}'), ("m", thinking, "", ""),
+            ("m", thinking, "<think>plan</think>", ""), ("m", thinking, '<think>plan</think>{"ok": 1}', '{"ok": 1}'),
+            ("vllm:8000:m", None, "<think>plan</think>", "<think>plan</think>")]:
         monkeypatch.setattr(LLMClient, "chat", lambda self, *a, content=content, **k: ChatResponse(content=content))
-        client = I._build_vllm_client("vllm:8000:m", role="worldsim")
+        client = I._build_vllm_client(spec, endpoint=endpoint, role="worldsim")
         assert simulate_tool_response(client, "system prompt", call, []) == tool_result
 
 
@@ -1193,9 +1168,14 @@ def test_a_persistently_unreachable_target_stops_the_run(monkeypatch):
 
 def test_an_empty_schedule_is_rejected_instead_of_reporting_zero_percent(monkeypatch):
     monkeypatch.setattr(engine_mod, "query_refiner_llm", _stub_refiner)
-    with pytest.raises(ValueError, match="no attempts"):
+    with pytest.raises(ValueError, match="0 combinations"):
         TaxonomyEngine(awareness_mode=3, refiner_model="stub", use_judge=False, use_context=False,
                        use_legitimize=False, use_seed=False, stack_only=2, stack_pool=1)
+    # Also rejected with a seed: the sweep selects nothing, so the run would quietly become a
+    # seed-only run instead of the sweep that was asked for.
+    with pytest.raises(ValueError, match="0 combinations"):
+        TaxonomyEngine(awareness_mode=3, refiner_model="stub", use_judge=False, use_context=False,
+                       use_legitimize=False, use_seed=True, stack_only=2, stack_pool=1)
 
 
 def test_resumed_points_do_not_emit_a_dangling_point_start(monkeypatch, tmp_path):

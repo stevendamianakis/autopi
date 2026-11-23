@@ -64,8 +64,8 @@ _PRIORITY_TECHNIQUES = [
     "F6.T1", "F6.T3", "F6.T2",            # output coercion / refusal suppression
     "F2.T3", "F2.T4",                       # syntax/format injection, synthetic dialogue
     "F1.T1", "F1.T4", "F1.T5",            # naked imperative, salience, indirect/declarative
-    "F5.T1", "F5.T2", "F5.T3", "F5.T5", "F5.T4",   # scenario framing / personas
-    "F4.T1", "F4.T4", "F4.T7", "F4.T3", "F4.T6", "F4.T5", "F4.T8", "F4.T2",   # social engineering
+    "F5.T1", "F5.T2", "F5.T3", "F5.T4",            # scenario framing / personas
+    "F4.T1", "F4.T4", "F4.T7", "F4.T3", "F4.T6", "F4.T5", "F4.T2",   # social engineering
     "F3.T1", "F3.T4", "F3.T5", "F3.T3", "F3.T2", "F3.T6",   # obfuscation (last)
 ]
 

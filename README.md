@@ -35,8 +35,10 @@ feedback from an LLM judge.
 - **Steerable.** A search strategy is a short YAML file of four kinds of blocks (seed, sweep, and an
   exploit block for each), repeated and ordered freely, except that an exploit block must follow the
   block it refines.
-- **Any benchmark, any model.** One engine runs on AgentDojo and IPI Arena through small adapters, and
-  the target, the generator and the judge are plain LLM endpoints.
+- **Many benchmarks, many models.** One engine runs on AgentDojo and IPI Arena through small adapters,
+  and the target, the generator and the judge are OpenAI-compatible, OpenAI, Anthropic, Google or Ollama
+  endpoints (including OpenAI's o-series reasoning models and Azure through its OpenAI-compatible URL). A
+  new benchmark is a small adapter; a new provider is reached through an OpenAI-compatible URL.
 
 ## How it works
 
@@ -163,7 +165,7 @@ A strategy is an ordered list of blocks, an attempt budget per scenario and a st
 | `full.yaml` | seed, L1 sweep, 3 variants of each failed line | 529 | coverage |
 | `seed-exploit.yaml` | seed, 600 variants of the seed | 601 | ASR with a strong seed |
 | `l1.yaml` | seed, L1 sweep | 133 | low cost |
-| `repeated-phases.yaml` | seed and sweep blocks, repeated and reordered | 80 | illustration |
+| `repeated-phases.yaml` | seed and sweep blocks, repeated and reordered | ≤75 (budget 80) | illustration |
 
 ```yaml
 # configs/strategies/full.yaml
@@ -256,7 +258,7 @@ the paper, use the settings it lists instead.
 | Target temperature | 0, as both benchmarks request | 0 | `temperature` in the target alias |
 | Target reasoning effort | The model's default | None sent | `reasoning_effort` in the target alias |
 | Target thinking | The model's default, on or off | None sent (`server`), except that a `vllm:PORT:MODEL_ID` target runs with thinking off | `--target-thinking server`, or `thinking` in the alias |
-| Target output cap | The benchmark's | AgentDojo: no cap, but 1,024 tokens for Anthropic and 65,535 for Google targets. IPI Arena: 4,096 | `--target-max-tokens` (AgentDojo), or `max_tokens` in the alias |
+| Target output cap | The benchmark's | AgentDojo: no cap, but 1,024 tokens for Anthropic and 65,535 for Google targets. IPI Arena: 4,096 | `--target-max-tokens` (either benchmark), or `max_tokens` in the target alias |
 | Tool calling (AgentDojo) | Native | Native | `--tool-calling` |
 | Injection placement (AgentDojo) | `agentdojo`, the vectors the user task reads | `agentdojo` | `--injection-placement` |
 | Version and defense (AgentDojo) | v1.2.2, no defense | v1.2.2, no defense | `--benchmark-version`, `--defense` |
@@ -264,11 +266,24 @@ the paper, use the settings it lists instead.
 | Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--worldsim` |
 | Generator and diagnostic judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--refiner` alias |
 
+- A model alias's `temperature`, `top_p` and `max_tokens` shape the target's and the generator's
+  requests. On IPI Arena the scoring judge and the tool simulator keep the benchmark's own per-call
+  values, which are part of its scoring; pick their models with `--judge` and `--worldsim`.
 - Anthropic targets accept no sampling parameters, so they run with the API's default sampling.
-- With thinking on, the reasoning counts toward the output cap, so a cap can cut an answer short.
+- OpenAI's o-series reasoning models reject a non-default temperature and take the output cap only as
+  `max_completion_tokens`. Use an alias with `max_tokens_field: max_completion_tokens` and
+  `omit_parameters: [temperature]` (see `configs/models.example.yaml`), for the target, the generator and
+  IPI Arena's clients. A model that supports tool calling only through OpenAI's Responses API cannot be a
+  target, since every client here uses Chat Completions.
+- With thinking on, the reasoning counts toward the output cap, so a cap can cut an answer short; the
+  generator's default 1,024-token cap can be too small for a hosted reasoning model.
+- A self-hosted **native** target that thinks should be served with a reasoning parser (for example vLLM
+  `--reasoning-parser`), so its reasoning is not scored and does not reach the attacker's judge.
 - Model cards often recommend sampling instead of greedy decoding. Qwen3.6's suggests temperature
-  1.0 with thinking on, and Qwen3's advises against greedy decoding there. Keep 0 to match the
-  benchmarks, and report it if you follow the card instead.
+  1.0 with thinking on, and Qwen3's advises against greedy decoding there. Google advises keeping
+  Gemini 3 at its default sampling, and its newer models ignore a custom temperature, so AgentDojo's
+  temperature 0 does not apply to them. Keep 0 to match the benchmarks where it applies, and report it
+  if you follow the card instead.
 
 ## Reproducibility
 

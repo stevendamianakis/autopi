@@ -1,5 +1,32 @@
 # Release notes
 
+## Version 0.3.1
+
+A review-driven correctness and model-support release. No bundled benchmark file
+changed, and AgentDojo's and IPI Arena's own execution, injection and scoring are
+unchanged. Several defaults changed, so use a fresh output directory.
+
+| Area | Change |
+|---|---|
+| Hidden reasoning | Anthropic `thinking` and `redacted_thinking` blocks are dropped from the transcript the diagnostic judge and context blending read (AgentDojo still scores its own unchanged messages). A target alias that asks Gemini to return its thoughts (`include_thoughts`) is refused, since AgentDojo would turn them into ordinary text. Leaked reasoning is removed only from a self-hosted endpoint whose thinking is not `off`: `<think>` reasoning wherever it sits (also before the first `</think>` of a template that puts the opener in the prompt), and `[THINK]`, `◁think▷`, `<seed:think>` where a reply opens with them. A thinking-off or hosted endpoint returns no reasoning, so a reasoning-like tag in its reply (for example an injected token the agent quotes in a tool argument) is now kept; 0.3.0 removed `<think>` text from every prompted and IPI Arena reply. A self-hosted thinking target should still be served with a reasoning parser, which a native AgentDojo target needs |
+| Generator and judge replies | A self-hosted generator or diagnostic judge that may think has reasoning that opens its reply removed before the line or `FAILURE_MODE` is parsed, including the text before a closing tag when AutoPI's answer follows it, so a draft written inside the reasoning is not taken as the answer. A closing tag inside the generated line is kept |
+| Seed exploited after an infrastructure failure | A `seed_exploit` block now refines the seed when the seed attempt failed in the infrastructure, not only when it was scored a failure, matching the paper's engine. A Seed-Exploit run no longer discards all 600 variants because the seed attempt hit a transient error |
+| IPI Arena scoring decoding | A model alias's `temperature`, `top_p` and `max_tokens` shape the target's and the generator's requests, but not those of IPI Arena's scoring judge and WorldSim, which keep the per-call values IPI Arena sets as part of its scoring |
+| Diagnostic-judge transcript | Each exploited line's judge reads that line's own last transcript; a variant the generator could not write no longer makes the judge read another line's transcript. IPI Arena's prefilled conversation is labelled as earlier turns, not the agent's words, and is trimmed before the agent's own steps |
+| Target errors and the stop | Target errors are split into endpoint errors (unreachable, timed out, rate limited, failing on the server, or rejecting the request, for example over an unsupported parameter or a missing tool-call parser) and errors tied to one scenario (a context overflow, a malformed tool call). The run stops after 25 target attempts in a row with endpoint errors, or ten scenarios in a row lost to them, so a target that rejects every request stops within about 25 attempts and a scenario that always fails on its own no longer traps the run and `--resume`. A rejected key, account or model id (HTTP 401, 402, 403 other than a moderation block, 404, or an invalid API key) stops the run at once, on either benchmark |
+| Content-policy refusals | On AgentDojo, a request the target's provider refuses on content-policy grounds (Azure `content_filter`, OpenAI `invalid_prompt`, a moderation 403) is scored by AgentDojo on the state the agent reached, so a fully blocked scenario stays a miss in the denominator instead of dropping out of ASR. On IPI Arena such a run stays an error that IPI Arena leaves out of its ASR |
+| Generator checks | A command-line run sends the generator one short test request with the run's settings before the first scenario and stops if it fails. During the run, one HTTP 400 is still a skipped candidate, but 25 in a row from a role stop the run (`TAX_MAX_CONSECUTIVE_REFINER_400` / `max_consecutive_refiner_400`, default 25); a content-policy refusal is skipped like a refused line and does not count. HTTP 402 and an invalid API key are configuration errors |
+| Rate limits | On the generator's HTTP path (`openai-compatible`, `openai`, `ollama` endpoints) a rate-limited request (HTTP 429) is retried at least five times and waits as long as the server's `Retry-After` asks, instead of giving up after a short backoff |
+| OpenAI reasoning models | A new `max_tokens_field: max_completion_tokens` sends the output cap under the name o-series models require; with `omit_parameters: [temperature]` they work for the target, the generator and IPI Arena's clients, and omitting `max_tokens` also drops the renamed cap. See the `openai-reasoning-example` alias. Models that support tool calling only through OpenAI's Responses API cannot be targets, since every client here uses Chat Completions |
+| Ollama generator | An `extra_body.options` mapping (for example `num_ctx`) is merged into the sampling options rather than replacing them, and `omit_parameters` names are translated to Ollama's (`max_tokens` drops `num_predict`) |
+| Gemini key | A Google endpoint also accepts `GEMINI_API_KEY`, as the google-genai SDK does |
+| Transcript after a restart | AgentDojo restarts an agent that ends without a final answer; the transcript given to the judge and context blending now keeps every restart. An interrupted run is scored by AgentDojo with an empty final reply |
+| Empty sweep | A sweep that selects zero combinations is rejected even when a seed is present, instead of quietly becoming a seed-only run |
+| Logs and summary | Each scenario log records the `--max-attempts` cap and the effective budget, and the summary and the outcome count infrastructure failures inside scored scenarios. `--resume` without `--logdir` is a usage error; a corrupt scenario log under `--resume` is reported as one |
+| Python API defaults | `TaxonomyEngine` and `StrategyEngine` default to awareness mode 3 with no exploit variants, matching the command line and the paper (was mode 1 with one variant) |
+| Provenance | The manifest records which provider rerouting variables were set (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL`, `GOOGLE_GENAI_USE_VERTEXAI`, `OLLAMA_BASE_URL`), without credentials in URLs. The OpenAI generator now follows `OPENAI_BASE_URL` as the OpenAI SDK does for the target |
+| Cleanup | Removed unused functions from the model registry and the engine, and two technique ids from the sweep order that are not in the taxonomy (the sweep order of the bundled taxonomy is unchanged). Clearer errors for bad strategy fields (including repeated `order_ids`), an unknown benchmark version, and an IPI Arena category/scenario mismatch |
+
 ## Version 0.3.0
 
 Two AgentDojo options and one changed default. No bundled benchmark files changed,
@@ -159,7 +186,7 @@ on and a general interface for search strategies.
 | Model routing | Named endpoints per role, any OpenAI-compatible URL, explicit provider and model ids |
 | Text removed by a server-side tool parser | Optional recovery of the generated text from token ids, per endpoint (see [model configuration](models.md)) |
 | Failures | A provider or transport error is recorded as an infrastructure failure, never as an empty answer of the target. Malformed tool arguments written by a model go through the benchmark's own parser unchanged |
-| Provenance | Every run writes a manifest with its resolved settings, package versions and hashes, and refuses to mix runs with different settings in one output directory |
+| Provenance | A CLI run with `--logdir` writes a manifest with its resolved settings, package versions and hashes, and refuses to mix runs with different settings in one output directory |
 
 Changes to the bundled benchmark sources are listed in
 [THIRD_PARTY.md](../THIRD_PARTY.md).

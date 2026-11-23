@@ -30,6 +30,9 @@ class ModelEndpoint:
     reasoning_effort: str | None = None
     extra_body: dict = field(default_factory=dict)
     omit_parameters: tuple[str, ...] = ()
+    # The request field that carries the output cap. OpenAI's reasoning models accept it only as
+    # max_completion_tokens; everything else uses max_tokens.
+    max_tokens_field: str = "max_tokens"
 
     def __post_init__(self):
         if self.provider not in {"openai-compatible", "openai", "anthropic", "google", "ollama", "agentdojo"}:
@@ -50,6 +53,10 @@ class ModelEndpoint:
             raise ValueError("omit_parameters must be a list of parameter names")
         if set(self.omit_parameters) & {"model", "messages", "tools", "functions"}:
             raise ValueError("omit_parameters cannot remove the model, conversation or tool definitions")
+        if self.max_tokens_field not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("max_tokens_field must be max_tokens or max_completion_tokens")
+        if self.max_tokens_field == "max_completion_tokens" and self.provider not in {"openai-compatible", "openai"}:
+            raise ValueError("max_tokens_field: max_completion_tokens is for openai-compatible or openai endpoints")
         if self.tool_mode not in {"prompted", "native"}:
             raise ValueError("tool_mode must be prompted or native")
         if self.tool_mode == "prompted" and self.provider not in {"openai-compatible", "ollama"}:
@@ -81,11 +88,37 @@ class ModelEndpoint:
             "google": "GOOGLE_API_KEY", "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
         }.get(self.provider)
         value = os.environ.get(name, "") if name else ""
+        if not value and not self.api_key_env and self.provider == "google":
+            # The google-genai SDK reads GEMINI_API_KEY when GOOGLE_API_KEY is not set.
+            name, value = "GOOGLE_API_KEY or GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")
         if self.api_key_env and not value:
             raise EndpointConfigError(f"set the {self.api_key_env} environment variable for this endpoint")
         if self.provider in {"openai", "anthropic", "google"} and not value:
             raise EndpointConfigError(f"set {name} for provider {self.provider}")
         return value or "EMPTY"
+
+    @property
+    def may_leak_reasoning(self) -> bool:
+        """Whether a reply can carry the model's reasoning as text: a self-hosted endpoint
+        (OpenAI-compatible or Ollama) whose thinking is not off. A thinking-off endpoint does not
+        reason, and hosted providers return reasoning apart from the reply or not at all, so
+        reasoning-like tags in their replies are content."""
+        return self.provider in {"openai-compatible", "ollama"} and self.thinking != "off"
+
+    def refuse_returned_reasoning(self) -> None:
+        """Refuse a target alias that asks the provider to return the model's reasoning (Gemini's
+        ``include_thoughts``). AgentDojo turns returned thoughts into ordinary text, so they would
+        be scored as the agent's output and shown to the attacker's judge, which the threat model
+        excludes. Gemini returns no thoughts unless asked."""
+        def asks(value) -> bool:
+            if isinstance(value, dict):
+                return any((key == "include_thoughts" and item is True) or asks(item) for key, item in value.items())
+            return isinstance(value, list) and any(asks(item) for item in value)
+
+        if asks(self.extra_body):
+            raise EndpointConfigError(
+                "a target cannot request its reasoning (include_thoughts): it would be scored as the agent's "
+                "output and reach the attacker's judge. Remove include_thoughts from the target's extra_body")
 
     def public_config(self) -> dict:
         """Config includes an environment variable NAME, never its secret value."""

@@ -48,14 +48,37 @@ class RunResult:
 
 
 class AdapterInfraError(RuntimeError):
-    """Raised by ``run`` when an attempt aborted *before* the agent saw the injection
-    (sandbox/parse/transport error). The driver counts it against the budget via
-    ``mark_attempt_infra_failed`` without polluting the refiner's failed-template history."""
+    """Raised by ``run`` when an attempt cannot be scored fairly: a transport, provider, parse or
+    harness error, whether or not the agent had already read the injection. The driver counts it
+    against the budget via ``mark_attempt_infra_failed`` and keeps it out of the generator's
+    failed-line history.
+
+    ``endpoint_error`` is True when the endpoint itself failed: it could not be reached, timed
+    out, was rate limited or failed on the server, or rejected the request (an unsupported
+    parameter, a missing tool-call parser). Such an error tends to recur on every scenario. It
+    is False only for an error tied to this scenario, which another scenario would not hit: a
+    context overflow, a malformed tool call, a broken environment. Only endpoint errors count
+    toward the driver's stop when the target keeps failing. ``info`` holds optional
+    diagnostics that the driver writes to the scenario log."""
+
+    def __init__(self, kind: str = "infra", *, endpoint_error: bool = True, info: dict | None = None):
+        super().__init__(kind)
+        self.endpoint_error = endpoint_error
+        self.info = dict(info or {})
+
+
+class BenchmarkModelConfigError(RuntimeError):
+    """A model the benchmark calls (the target, or IPI Arena's judge or tool simulator) rejected
+    its credentials, its account or its model id (HTTP 401, 402, 403 other than a moderation
+    block, 404, or an invalid API key). Every scenario would fail the same way, so the run
+    stops instead of recording infrastructure failures."""
+
+    fatal = True
 
 
 @runtime_checkable
 class BenchmarkAdapter(Protocol):
-    """What the engine needs from a benchmark. Implemented by the three concrete adapters."""
+    """What the engine needs from a benchmark. Implemented by the two concrete adapters."""
 
     name: str
     checker_kind: str  # "state" (programmatic) | "judge" (LLM) | "hybrid"
@@ -71,5 +94,5 @@ class BenchmarkAdapter(Protocol):
     def run(self, point: AttackPoint, injection_text: str) -> RunResult:
         """Place ``injection_text`` at ``point``'s injection location, run the target agent
         once, and return the (utility, security, transcript). Raise :class:`AdapterInfraError`
-        if the attempt aborted before the agent saw the injection."""
+        if the attempt cannot be scored fairly."""
         ...

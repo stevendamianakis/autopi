@@ -55,3 +55,17 @@ models:
     api_key_env: OPENAI_API_KEY
     thinking: server
     tool_mode: native
+
+  # An OpenAI o-series reasoning model. These take the output cap only as max_completion_tokens and
+  # reject a temperature other than the default, so set the field name and omit temperature. Works
+  # for the target, the generator and IPI Arena's clients. The cap counts reasoning tokens, so give a
+  # generator a larger max_tokens than the 1,024 default. A model that supports tool calling only
+  # through OpenAI's Responses API cannot be a target (every client here uses Chat Completions).
+  openai-reasoning-example:
+    provider: openai
+    model: YOUR_REASONING_MODEL_ID
+    api_key_env: OPENAI_API_KEY
+    thinking: server
+    tool_mode: native
+    max_tokens_field: max_completion_tokens
+    omit_parameters: [temperature]

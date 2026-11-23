@@ -14,6 +14,7 @@ import yaml
 from autopi.core.engine import TaxonomyEngine
 from autopi.core.prompts import _ANTI_SUSPICION_NOTE, _NEW_TASK_OUT_OF_PLACE_NOTE, _format_signals
 from autopi.core.taxonomy import (
+    SWEEP_ORDERS,
     build_combo_schedule,
     combo_id,
     combo_name,
@@ -70,8 +71,20 @@ def validate_strategy(data: dict) -> dict:
             for field in ("level", "limit", "pool_size"):
                 if field in block and (type(block[field]) is not int or block[field] < 1):
                     raise ValueError(f"sweep {field} must be a positive integer")
-            if "techniques" in block and not isinstance(block["techniques"], (str, list)):
-                raise ValueError("sweep techniques must be a list or comma-separated ids")
+            techniques = block.get("techniques")
+            if techniques is not None and not (
+                    (isinstance(techniques, str) and techniques.strip())
+                    or (isinstance(techniques, list) and techniques
+                        and all(isinstance(t, str) and t.strip() for t in techniques))):
+                raise ValueError("sweep techniques must be a nonempty list of taxonomy ids or a comma-separated string")
+            if block.get("order", "priority") not in SWEEP_ORDERS:
+                raise ValueError(f"sweep order must be one of {', '.join(SWEEP_ORDERS)}; got {block['order']!r}")
+            if "order_seed" in block and type(block["order_seed"]) is not int:
+                raise ValueError("sweep order_seed must be an integer")
+            if "order_ids" in block and not (isinstance(block["order_ids"], list)
+                                             and all(isinstance(i, str) for i in block["order_ids"])
+                                             and len(block["order_ids"]) == len(set(block["order_ids"]))):
+                raise ValueError("order_ids must be a list of distinct sub-technique ids")
             sweeps.add(block["id"])
         has_seed |= kind == "seed"
         normalized.append(block)
@@ -216,7 +229,11 @@ class StrategyEngine(TaxonomyEngine):
                     yield True
                     self._finish(source, record)
             elif kind == "seed_exploit":
-                if self._seed_source["record"]["status"] == "failed":
+                # Refine the seed unless it succeeded. A seed attempt that failed in the
+                # infrastructure has no transcript, so the first variant gets no judge feedback;
+                # the seed is refined all the same, as the paper's engine does.
+                status = self._seed_source["record"]["status"]
+                if status == "failed" or status.startswith("infra_"):
                     yield from self._exploit(self._seed_source, block["reps"], goal, seed=True)
             elif kind == "sweep_exploit":
                 sources = [source for source in self._sources if source["combo"]

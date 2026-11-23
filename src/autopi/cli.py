@@ -48,6 +48,38 @@ def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[
     raise click.BadParameter(f"unknown benchmark {benchmark!r}")
 
 
+# Environment variables the provider SDKs read to reroute or switch their requests. A manifest
+# records the ones that are set (a URL without any user:password part): the native SDK paths
+# (AgentDojo targets, the Anthropic and Google generators) and the OpenAI generator honour them,
+# while IPI Arena's clients use each endpoint's base_url or the provider's public URL.
+_PROVIDER_ENVIRONMENT = ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "GOOGLE_GEMINI_BASE_URL",
+                         "GOOGLE_VERTEX_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI", "OLLAMA_BASE_URL")
+
+
+def _provider_environment() -> dict:
+    import re
+
+    return {name: re.sub(r"//[^/@]*@", "//", os.environ[name]) for name in _PROVIDER_ENVIRONMENT
+            if os.environ.get(name)}
+
+
+def _check_generator(engine) -> None:
+    """Send the generator one short request through the engine's own request path, with the
+    run's settings. Raise a ClickException when it fails, unless the provider refused the text on
+    content-policy grounds (the settings were accepted)."""
+    from autopi.models.clients import is_content_policy_rejection
+
+    try:
+        engine._query("Reply with the single word OK.")
+    except Exception as exc:
+        if is_content_policy_rejection(exc):
+            return
+        raise click.ClickException(
+            f"the generator rejected a test request with the run's settings ({type(exc).__name__}: "
+            f"{str(exc)[:200]}). Check its model id, key and settings (for example temperature, "
+            "max_tokens or max_tokens_field, thinking) before starting the run") from exc
+
+
 @click.group()
 def main() -> None:
     """AutoPI — taxonomy-driven adaptive prompt-injection evaluation."""
@@ -106,18 +138,22 @@ def main() -> None:
               help="Draw the stacking pool at random instead of the first --stack-pool. Env: TAX_STACK_RANDOM.")
 @click.option("--stack-seed", default=None, type=int, help="Seed of the random stacking pool. Env: TAX_STACK_SEED.")
 @click.option("--no-early-stop", is_flag=True,
-              help="Keep attacking a data point after a success, until its attempt budget is exhausted. "
-                   "The log then lists every success (technique coverage of a scenario, attempt-level ASR).")
+              help="Keep attacking a data point after a success, through the rest of its schedule (the "
+                   "budget, or earlier if the schedule ends first). The log then lists every success "
+                   "(technique coverage of a scenario, attempt-level ASR).")
 @click.option("--max-attempts", default=None, type=click.IntRange(1), help="Hard cap on target calls per data point.")
 @click.option("--no-judge", is_flag=True, help="Disable the judge mechanism (①).")
 @click.option("--no-context", is_flag=True, help="Disable context-blending (②).")
 @click.option("--no-legitimize", is_flag=True, help="Disable the legitimize note.")
 @click.option("--target-thinking", default=None, type=click.Choice(list(TARGET_THINKING_CHOICES)),
-              help="Thinking mode of a locally served target: off (default), on, or server (send nothing "
-                   "and let the server decide). Env: AUTOPI_TARGET_THINKING.")
+              help="Thinking mode of a locally served target: off, on, or server (send nothing and let "
+                   "the server decide). Overrides the target's own setting. A vllm:PORT:MODEL_ID target "
+                   "defaults to off; any other target keeps its alias's or spec's value (server unless set). "
+                   "Env: AUTOPI_TARGET_THINKING.")
 @click.option("--target-max-tokens", default=None, type=int,
-              help="Output cap of a locally served AgentDojo target (default: no cap). "
-                   "Env: AUTOPI_TARGET_MAX_TOKENS.")
+              help="Output cap of the target, on either benchmark and any provider (default: the alias's own, "
+                   "else the benchmark client's: none for OpenAI-compatible AgentDojo targets, 1,024 for "
+                   "Anthropic, 65,535 for Google, 4,096 on IPI Arena). Env: AUTOPI_TARGET_MAX_TOKENS.")
 @click.option("--tool-calling", default=None, type=click.Choice(list(TOOL_CALLING_MODES)),
               help="How an AgentDojo target calls tools: native (default; the provider's or server's "
                    "tool-calling API, as AgentDojo runs models with tool support) or prompted (AgentDojo's "
@@ -152,17 +188,20 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     import re
     from pathlib import Path
 
+    from autopi.adapters.base import BenchmarkModelConfigError
     from autopi.core.engine import GeneratorUnavailableError, TaxonomyEngine
     from autopi.core.refiner import RefinerConfig
     from autopi.core.seeds import resolve_seed
     from autopi.core.strategy import StrategyEngine, load_strategy
     from autopi.harness.journal import Journal
     from autopi.harness.manifest import benchmark_data_digest, save_run_manifest
-    from autopi.harness.runner import TargetUnavailableError
+    from autopi.harness.runner import CorruptScenarioLogError, TargetUnavailableError
     from autopi.models.endpoints import load_model_catalog, override_endpoint, resolve_endpoint
 
     if num_shards < 1 or not 0 <= shard < num_shards:
         raise click.UsageError("--num-shards must be positive and 0 <= --shard < --num-shards")
+    if resume and not logdir:
+        raise click.UsageError("--resume reads each scenario's per-pair log, so it needs --logdir")
     if benchmark == "ipiarena" and (defense or benchmark_version or (injection_tasks and set(injection_tasks) != {"ipi"})):
         raise click.UsageError("IPI Arena uses scenario ids via --user-task and its own scoring; AgentDojo defense/version/task options do not apply")
     if benchmark == "ipiarena":
@@ -275,6 +314,13 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         if dry_run:
             click.echo("Validated. No model calls were made.")
             return
+        # One short test request to the generator before the first scenario, with the settings the
+        # run will use, so that a generator rejecting them (an unsupported temperature or max_tokens,
+        # a wrong model id or key) stops the run now instead of turning it into seed-only results.
+        # Skipped when the run makes no generator request (only the seed is tried).
+        budget = min(max_attempts or engine.attempt_budget, engine.attempt_budget)
+        if not (engine.use_seed and budget <= 1):
+            _check_generator(engine)
         if logdir:
             from autopi.core.taxonomy import _BUNDLED_TAXONOMY
             settings = {
@@ -288,6 +334,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                     "order": engine.order, "order_seed": engine.order_seed, "sweep_before_seed_para": engine.sweep_before_seed_para},
                 "mode": mode, "mechanisms": [engine.use_judge, engine.use_context, engine.use_legitimize],
                 "generator_limits": {"max_consecutive_refiner_errors": engine.max_consecutive_refiner_errors,
+                                     "max_consecutive_refiner_400": engine.max_consecutive_refiner_400,
                                      "max_consecutive_unusable": engine.max_consecutive_unusable},
                 "stop_at_first_success": stop, "max_attempts": max_attempts, "defense": defense,
                 "tool_calling": target_endpoint.tool_mode if benchmark == "agentdojo" else "native",
@@ -297,6 +344,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                 "ipi_ignore_concealment": ipi_ignore_concealment, "ipi_max_steps": ipi_max_steps,
                 "ipi_harness_retries": ipi_harness_retries, "ipi_behaviors_path": ipi_behaviors_path,
                 "environment": {key: value for key, value in os.environ.items() if key.startswith("TAX_") and not re.search(r"API_KEY|TOKEN$|SECRET|PASSWORD", key)},
+                "provider_environment": _provider_environment(),
                 "benchmark_data_sha256": benchmark_data_digest(adapter),
             }
             save_run_manifest(Path(logdir), settings)
@@ -307,7 +355,9 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     try:
         summary = run_attack(adapter, engine, logdir=logdir, max_attempts=max_attempts, points=points, resume=resume,
                              stop_at_first_success=stop, journal=journal)
-    except (GeneratorUnavailableError, TargetUnavailableError) as exc:
+    except CorruptScenarioLogError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except (GeneratorUnavailableError, TargetUnavailableError, BenchmarkModelConfigError) as exc:
         raise click.ClickException(f"{exc}.") from exc
     click.echo("\n" + summary.format())
 

@@ -328,7 +328,8 @@ def test_cli_manifest_and_scenario_log_record_the_resolved_generator_limits(monk
     assert result.exit_code == 0, result.output
     manifest = json.loads((tmp_path / "run_manifest.json").read_text())
     scenario = json.loads((tmp_path / "refiner_logs/test/u0__i.json").read_text())
-    expected = {"max_consecutive_refiner_errors": 5, "max_consecutive_unusable": 250}
+    expected = {"max_consecutive_refiner_errors": 5, "max_consecutive_refiner_400": 25,
+                "max_consecutive_unusable": 250}
     assert manifest["settings"]["generator_limits"] == scenario["generator_limits"] == expected
 
 

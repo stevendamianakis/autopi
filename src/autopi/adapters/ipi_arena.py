@@ -32,19 +32,46 @@ Settings that change what a run measures:
   they convert prefilled conversations (README, "IPI Arena").
 
 The transcript handed to the engine's diagnostic judge and context blending holds the
-scenario's prefilled history and every step of the agent's turn: what it wrote, its tool
-calls, and the simulated tool results, marked ``simulated`` so that context blending reads
-only the scenario's own documents.
+scenario's prefilled history, marked ``prefilled`` so the judge does not take it for the
+agent's words, and every step of the agent's turn: what it wrote, its tool calls, and the
+simulated tool results, marked ``simulated`` so that context blending reads only the
+scenario's own documents.
+
+Model settings: a model alias's ``temperature``, ``top_p`` and ``max_tokens`` apply to the
+target only. IPI Arena's scoring judge and WorldSim keep the values IPI Arena sets on each
+call, which are part of its evaluation (``omit_parameters``, ``extra_body`` and the removals a
+provider requires still apply).
+
+Injection goal: a scenario's ``objective``. Five bundled scenarios have none
+(browser-gmail-forward-injection, empty-box-listing, garage-door-email,
+keepass-config-trigger-export, ssh-key-deployment-injection); for them the goal is the
+scenario's ``summary``, a narrative of the attack, as in the paper's runs.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Iterator
 
-from autopi.adapters.base import AdapterInfraError, AttackPoint, RunResult
+from autopi.adapters.base import AdapterInfraError, AttackPoint, BenchmarkModelConfigError, RunResult
 from autopi.models.registry import resolve_target_thinking
+
+# IPI Arena records a failed run's exception as text; the OpenAI SDK's begins "Error code: N".
+_REJECTED_CONFIGURATION = re.compile(
+    r"\bError code: (401|402|403|404)\b|API_KEY_INVALID|API key not valid|incorrect api key", re.IGNORECASE)
+# A moderation or content-policy refusal: IPI Arena records it as a failed run and leaves it out
+# of its ASR, and so does AutoPI (it is not a credential error and says nothing about the endpoint).
+_POLICY_REFUSAL = re.compile(
+    r"moderation|flagged|guardrail|content[ _-]?polic|content[ _]filter|ResponsibleAIPolicyViolation", re.IGNORECASE)
+# An error of the endpoint itself (unreachable, rate limited, failing, rejecting the request), as
+# opposed to one of this scenario (a context overflow, a browser failure, a judge reply IPI Arena
+# cannot parse).
+_ENDPOINT_ERROR = re.compile(r"connection error|timed out|timeout|\bError code: (4\d\d|5\d\d)\b", re.IGNORECASE)
+_CONTEXT_OVERFLOW = re.compile(
+    r"context_length_exceeded|context length|maximum context|reduce the length|too many tokens"
+    r"|prompt is too long|input is too long", re.IGNORECASE)
 
 
 def _first_user_text(behavior: dict) -> str:
@@ -95,6 +122,8 @@ def _build_vllm_client(spec: str, *, endpoint=None, journal=None, role="target")
     endpoint = endpoint or resolve_endpoint(spec)
     if endpoint.tokenizer_path:
         raise ValueError("IPI Arena uses native tools; do not enable raw-token recovery on its clients")
+    if role == "target":
+        endpoint.refuse_returned_reasoning()
     urls = {"openai": "https://api.openai.com/v1",
             "anthropic": "https://api.anthropic.com/v1",
             "google": "https://generativelanguage.googleapis.com/v1beta/openai"}
@@ -112,9 +141,11 @@ def _build_vllm_client(spec: str, *, endpoint=None, journal=None, role="target")
     def chat(*args, **kwargs):
         from autopi.models.clients import visible_text
         result = original(*args, **kwargs)
-        # Remove a leaked reasoning block, but keep a missing reply apart from an empty one:
-        # IPI Arena's WorldSim answers only a missing reply with {"status": "success"}.
-        if result.content is not None:
+        # Remove leaked reasoning from a self-hosted endpoint that may think; a thinking-off or
+        # hosted endpoint returns none, so reasoning-like tags in its reply are content and are
+        # kept. Keep a missing reply apart from an empty one: IPI Arena's WorldSim answers only a
+        # missing reply with {"status": "success"}.
+        if result.content is not None and endpoint.may_leak_reasoning:
             result.content = visible_text(result.content)
         return result
 
@@ -261,11 +292,15 @@ class IPIArenaAdapter:
         self._all_behaviors = load_behaviors(behaviors_path)
         self._behaviors = _select_behaviors(self._all_behaviors, behaviors)
         self._categories = set(categories) if categories else None
-        known_categories = {b.get("category", "") for b in self._behaviors.values()}
+        known_categories = {b.get("category", "") for b in self._all_behaviors.values()}
         if self._categories and self._categories - known_categories:
-            raise ValueError(f"unknown IPI Arena categories: {sorted(self._categories - known_categories)}")
+            raise ValueError(f"unknown IPI Arena categories: {sorted(self._categories - known_categories)}; "
+                             f"available: {sorted(known_categories)}")
         if not self._behaviors:
             raise ValueError("no IPI Arena scenarios found; check the installed benchmark data or --ipi-behaviors-path")
+        if self._categories and not any(b.get("category", "") in self._categories for b in self._behaviors.values()):
+            raise ValueError(f"none of the selected IPI Arena scenarios is in the selected categories "
+                             f"{sorted(self._categories)}")
         # As IPI Arena's own BenchmarkRunner.run(): a selected browser scenario needs playwright.
         # Stop at setup (a dry run included) rather than fail every attempt in the infrastructure.
         browser = sorted(bid for bid, b in self._behaviors.items() if b.get("html_template")
@@ -290,6 +325,8 @@ class IPIArenaAdapter:
                 user_task_id=bid,
                 injection_task_id="ipi",
                 user_task_prompt=_first_user_text(behavior),
+                # Five bundled scenarios have no objective; their summary is used, as in the
+                # paper's runs (see the module docstring).
                 injection_goal=behavior.get("objective", "") or behavior.get("summary", ""),
                 extra={"_behavior": behavior},
             )
@@ -326,7 +363,15 @@ class IPIArenaAdapter:
                     client.chat = chat
             if err is None:
                 return res
-        raise AdapterInfraError(f"ipi_harness: {str(err)[:120]}")
+            text = str(err)
+            if _REJECTED_CONFIGURATION.search(text) and not _POLICY_REFUSAL.search(text):
+                raise BenchmarkModelConfigError(
+                    f"an IPI Arena model (the target, the judge or the tool simulator) rejected its credentials, "
+                    f"account or model ({text[:160]}). Fix the model id or the API key, then rerun with --resume")
+        text = str(err)
+        endpoint_error = (bool(_ENDPOINT_ERROR.search(text)) and not _POLICY_REFUSAL.search(text)
+                          and not _CONTEXT_OVERFLOW.search(text))
+        raise AdapterInfraError(f"ipi_harness: {text[:120]}", endpoint_error=endpoint_error)
 
     def _agent_transcript(self) -> list | None:
         """The last harness run as plain messages: the prefilled history as role and content
@@ -340,7 +385,9 @@ class IPIArenaAdapter:
         out = []
         for i, m in enumerate(conversation):
             entry = {"role": m.get("role", ""), "content": _flatten(m.get("content"))}
-            if i >= prefilled:
+            if i < prefilled:
+                entry["prefilled"] = True
+            else:
                 if m.get("tool_calls"):
                     entry["tool_calls"] = [_plain_call(call) for call in m["tool_calls"]]
                 if entry["role"] == "tool":
@@ -381,7 +428,8 @@ class IPIArenaAdapter:
                 seen = build_messages(behavior, injection_text)
             except Exception:
                 seen = behavior.get("messages", [])
-            messages = [{"role": m.get("role", ""), "content": _flatten(m.get("content"))} for m in seen]
+            messages = [{"role": m.get("role", ""), "content": _flatten(m.get("content")), "prefilled": True}
+                        for m in seen]
             tcs = [
                 {"function": (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)),
                  "args": (tc.get("arguments") if isinstance(tc, dict) else getattr(tc, "arguments", {}))}

@@ -56,30 +56,60 @@ Combinations are unordered sets, sampled without repetition within a sweep.
 Higher levels are generated lazily; setting a small target budget does not
 allocate billions of combinations.
 
-`seed_exploit` makes `reps` variants of the latest earlier failed seed. A seed
-block must precede it. `sweep_exploit` makes `reps` variants of each failed sweep
-line from the named earlier `source`. If source is omitted, it uses all earlier
-sweeps. Repeating an exploit block continues that source's failed-variant history
-and accumulated diagnostic feedback. Repeating a sweep creates fresh source
-lines, tracked by their originating block and target attempt.
+`seed_exploit` makes `reps` variants of the latest earlier seed. A seed
+block must precede it, and the seed must not have succeeded; a seed attempt that
+failed in the infrastructure is refined all the same (its first variant simply
+has no diagnostic feedback to work from). `sweep_exploit` makes `reps` variants of
+each failed sweep line from the named earlier `source`. If source is omitted, it
+uses all earlier sweeps. Repeating an exploit block continues that source's
+failed-variant history and accumulated diagnostic feedback. Repeating a sweep
+creates fresh source lines, tracked by their originating block and target attempt.
 
-Only actual target runs consume the attempt budget. Invalid, empty or refused
-generator outputs are logged and skipped. A line that opens like a refusal ("I
-can't…", "I'm sorry…") counts as one, also inside the template delimiters, so a
-written line that opens this way is skipped too. A generator that cannot be reached (a
-connection failure, timeout, rate limit or server error after the endpoint's
-retries) stops the run before the scenario is logged, so `--resume` repeats it.
-This includes TLS/SSL and proxy failures. A missing, unreadable or invalid
-tokenizer is a setup error. Three consecutive unexpected request errors from
-the generator or diagnostic judge also stop the run before logging the current
-scenario. Each role keeps its own streak across scenarios; a successful request
-clears that role's streak. HTTP 400 remains a skippable per-prompt rejection.
-Infrastructure failures consume budget but never become failed source lines or
-failed-variant examples. A scenario whose every attempt was an infrastructure
-failure is not logged and stays out of ASR; the summary counts it, and `--resume`
-runs it again. Successful source lines are not selected for exploitation. If
-continuing after a successful variant, that success is not sent to the diagnostic
-judge as a failure.
+A candidate the generator could not write makes no target run and does **not**
+consume the attempt budget: an invalid, empty or refused generator output is
+logged and skipped. A line that opens like a refusal ("I can't…", "I'm sorry…")
+counts as one, also inside the template delimiters, so a written line that opens
+this way is skipped too, and so is a prompt the provider refuses on content-policy
+grounds. Before the first scenario, a command-line run sends the generator **one
+short test request** with the run's settings and stops if it fails, so a generator
+that rejects those settings (an unsupported `temperature` or `max_tokens`, a wrong
+model id or key) is caught before any target call; a run that tries only the seed
+skips the test. During the run, a generator that cannot be reached (a connection
+failure, timeout, rate limit or server error after the endpoint's retries) stops the
+run before the scenario is logged, so `--resume` repeats it. This includes TLS/SSL
+and proxy failures. A missing, unreadable or invalid tokenizer is a setup error, and
+so is a rejected key, account or model id (HTTP 401, 402, 403 other than a
+moderation block, 404, or an invalid API key). Three consecutive unexpected request
+errors from the generator or diagnostic judge also stop the run before logging the
+current scenario. Any other HTTP 400 is a per-prompt rejection and stays a skippable
+candidate, but **25 consecutive HTTP 400s** from a role stop the run, since a
+generator that rejects every request would otherwise turn it into seed-only results.
+Each role keeps its own error and 400 streaks across scenarios; a successful request
+or a content-policy refusal clears them.
+
+A target run that fails in the infrastructure (a transport, provider or parse
+error, or a request the provider rejected) does consume the budget, but never
+becomes a failed source line or a failed-variant example. A scenario whose every
+attempt was an infrastructure failure is not logged and stays out of ASR; the
+summary counts it, and `--resume` runs it again. The run stops when the target keeps
+failing with **endpoint errors**: it cannot be reached, times out, is rate limited,
+fails on the server, or rejects the request (for example a parameter the model does
+not support, or a server started without the tool-call parser native tools need).
+It stops after **25 target attempts in a row** that failed that way, or after ten
+scenarios in a row whose every attempt did, before the current scenario is logged.
+Errors tied to one scenario (a context overflow, a malformed tool call, a broken
+environment) do not count, so a scenario that always fails on its own cannot stop
+the run. A target that rejects its key, account or model id (HTTP 401, 402, 403
+other than a moderation block, 404, or an invalid API key) stops the run at once.
+On AgentDojo, a request the target's provider refuses on content-policy grounds
+(Azure `content_filter`, OpenAI `invalid_prompt`, a moderation 403) ends the agent's
+run there and is scored by AgentDojo on the state it reached, as a defended attempt
+when the goal was not met, so a fully blocked scenario stays a miss in the
+denominator. On IPI Arena such a refusal is a failed run that IPI Arena leaves out of
+its ASR, and AutoPI does the same. Infrastructure failures inside a scored scenario
+are counted in the summary and the scenario log. Successful source lines are not
+selected for exploitation. If continuing after a successful variant, that success
+is not sent to the diagnostic judge as a failure.
 
 The finite schedule can end before the budget (for example after skipped
 generator outputs or when no failed sources exist). `--max-attempts` can impose
@@ -95,9 +125,11 @@ actual target-attempt count and any successes already found. Resume retains
 this completed result, and the summary reports how many scenarios hit the limit.
 
 Configure positive integer limits with `TAX_MAX_CONSECUTIVE_UNUSABLE` (default
-200) and `TAX_MAX_CONSECUTIVE_REFINER_ERRORS` (default 3). Python callers can use
-the corresponding `max_consecutive_unusable` and `max_consecutive_refiner_errors`
-constructor arguments. Resolved limits appear in the manifest and scenario logs.
+200), `TAX_MAX_CONSECUTIVE_REFINER_ERRORS` (default 3) and
+`TAX_MAX_CONSECUTIVE_REFINER_400` (default 25). Python callers can use the
+corresponding `max_consecutive_unusable`, `max_consecutive_refiner_errors` and
+`max_consecutive_refiner_400` constructor arguments. Resolved limits appear in the
+manifest and scenario logs.
 
 Modes 1 and 2 receive only the diagnostic judge's fixed failure-category phrase;
 its free-text explanation is withheld to keep the injection goal hidden. Mode 3

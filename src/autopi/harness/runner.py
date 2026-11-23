@@ -14,6 +14,7 @@ attempt-level ASR that is comparable with attackers that keep sampling after a s
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -21,10 +22,19 @@ from typing import Iterable
 from autopi.adapters.base import AdapterInfraError, AttackPoint, BenchmarkAdapter
 from autopi.core.engine import TaxonomyEngine
 
-# After this many consecutive scenarios whose every attempt failed in the infrastructure, the
-# run stops: the target is almost certainly down or misconfigured, and continuing would only
-# keep paying the generator for scenarios that can never be measured.
+# The run stops when the target keeps failing with endpoint errors (it cannot be reached, times
+# out, is rate limited, fails on the server, or rejects every request, for example over an
+# unsupported parameter or a missing tool-call parser): after this many target attempts in a
+# row, or after this many scenarios in a row whose every attempt failed that way. Continuing
+# would only keep paying the generator for scenarios that can never be measured. Errors tied to
+# one scenario (a context overflow, a malformed tool call) do not count toward either, so a
+# scenario that always fails on its own cannot stop the run.
+_MAX_CONSECUTIVE_ENDPOINT_ATTEMPTS = 25
 _MAX_CONSECUTIVE_INFRA = 10
+
+
+class CorruptScenarioLogError(ValueError):
+    """A scenario log that ``--resume`` would reuse cannot be read."""
 
 
 class TargetUnavailableError(RuntimeError):
@@ -46,6 +56,7 @@ class PointOutcome:
     successful_attempts: int = 0                 # how many attempts succeeded
     solved_sources: list[str] = field(default_factory=list)   # seed / sub-techniques with a success
     generation_stop_reason: str | None = None
+    infrastructure_failures: int = 0             # attempts that failed in the infrastructure
 
 
 @dataclass
@@ -104,6 +115,11 @@ class RunSummary:
                 f"no early stop: attempt-level ASR={self.attempt_level_asr:.4f} ({hits}/{made})  "
                 f"sub-techniques with a success={len(self.covered_subtechniques)}"
             )
+        partial = sum(o.infrastructure_failures for o in self.outcomes)
+        if partial:
+            made = sum(o.attempts for o in self.outcomes)
+            lines.append(f"attempts that failed in the infrastructure in scored scenarios: {partial} of {made} "
+                         "(they count toward k and the budget, never as failed attacks)")
         if self.infrastructure_only:
             lines.append(f"only infrastructure failures, left out of ASR and not logged "
                          f"(--resume runs them again): {len(self.infrastructure_only)}")
@@ -115,7 +131,9 @@ class RunSummary:
 
 def _save_criteria_log(logdir: Path, point: AttackPoint, infos: list, succeeded: bool) -> None:
     # Side-log per-attempt criterion detail for adapters that expose it (IPI Arena: full
-    # is_break vs concealment-excluded action_only), so a single run yields both ASRs.
+    # is_break vs concealment-excluded action_only). A full-criteria run thus also gives the
+    # action-only result of the attempts it made. Written atomically, and before the scenario
+    # log that --resume reads, so a finished scenario always has its criteria log.
     d = logdir / "criteria_logs" / point.suite
     d.mkdir(parents=True, exist_ok=True)
     rec = {
@@ -125,7 +143,14 @@ def _save_criteria_log(logdir: Path, point: AttackPoint, infos: list, succeeded:
         "any_action_only": any(bool(i.get("action_only")) for i in infos),
         "num_attempts": len(infos), "attempts": infos,
     }
-    (d / f"{point.user_task_id}__{point.injection_task_id}.json").write_text(json.dumps(rec, indent=1))
+    path = d / f"{point.user_task_id}__{point.injection_task_id}.json"
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        temporary.write_text(json.dumps(rec, indent=1), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def run_attack(
@@ -167,6 +192,7 @@ def run_attack(
                          stop_at_first_success=stop_at_first_success)
     pts = list(points) if points is not None else list(adapter.iter_points())
     consecutive_infra = 0
+    consecutive_endpoint_attempts = 0
 
     for point in pts:
         if journal:
@@ -181,7 +207,9 @@ def run_attack(
                 prev = json.loads(log_file.read_text())
                 done_ok, done_att = bool(prev.get("injection_succeeded")), int(prev.get("total_attempts", 0) or 0)
             except (ValueError, TypeError, OSError) as exc:
-                raise ValueError(f"cannot resume invalid scenario log {log_file}") from exc
+                raise CorruptScenarioLogError(
+                    f"cannot resume: the scenario log {log_file} cannot be read; delete it to run that "
+                    "scenario again") from exc
             summary.outcomes.append(PointOutcome(
                 point=point, succeeded=done_ok, attempts=done_att,
                 solved_sequence_id=prev.get("solved_sequence_id"), solved_phase=prev.get("solved_phase"),
@@ -189,6 +217,7 @@ def run_attack(
                 successful_attempts=int(prev.get("num_successes", 1 if done_ok else 0) or 0),
                 solved_sources=list(prev.get("solved_sources") or []),
                 generation_stop_reason=prev.get("generation_stop_reason"),
+                infrastructure_failures=len(prev.get("infra_failures") or []),
             ))
             if verbose:
                 # Logs written before the stop rule was recorded came from early-stopped runs.
@@ -205,6 +234,7 @@ def run_attack(
         succeeded = False
         attempts = 0
         infrastructure_failures = 0
+        endpoint_failures = 0
         first_success_attempt: int | None = None
         infos: list = []
         # has_candidate is False only in no-seed mode when no first candidate could be written.
@@ -215,18 +245,32 @@ def run_attack(
                 journal.context["attempt"] = attempts
                 journal.emit("attempt_start", injection_text=injection_text, candidate=engine._attempt_meta[-1])
             infra_kind: str | None = None
+            infra_info: dict = {}
             try:
                 result = adapter.run(point, injection_text)
             except AdapterInfraError as e:
                 result, infra_kind = None, (str(e)[:40] or "infra")
+                infra_info = dict(getattr(e, "info", None) or {})
+                endpoint_error = bool(getattr(e, "endpoint_error", True))
+                endpoint_failures += endpoint_error
+                consecutive_endpoint_attempts = consecutive_endpoint_attempts + 1 if endpoint_error else 0
+            else:
+                consecutive_endpoint_attempts = 0
             if journal:
-                journal.emit("attempt_end", result=result, infrastructure_error=infra_kind)
+                journal.emit("attempt_end", result=result, infrastructure_error=infra_kind,
+                             infrastructure_info=infra_info or None)
             # Budget check in the original loop's order: before this attempt is recorded, so
             # a point gets engine.attempt_budget target calls (the seed plus the schedule).
             more = engine.has_attempts_remaining()
             if result is None:
                 infrastructure_failures += 1
-                engine.mark_attempt_infra_failed(infra_kind or "infra")
+                engine.mark_attempt_infra_failed(infra_kind or "infra", info=infra_info or None)
+                if consecutive_endpoint_attempts >= _MAX_CONSECUTIVE_ENDPOINT_ATTEMPTS:
+                    raise TargetUnavailableError(
+                        f"the target failed {consecutive_endpoint_attempts} attempts in a row with endpoint errors "
+                        f"(last: {infra_kind}): it is unavailable or rejects every request, for example over an "
+                        "unsupported parameter, a missing tool-call parser or an invalid key; stopping before this "
+                        "scenario is logged. Check the target endpoint, then rerun the same command with --resume")
             else:
                 if result.info and ("action_only" in result.info or "is_break" in result.info):
                     infos.append({"attempt": attempts, "is_break": result.info.get("is_break"),
@@ -256,19 +300,23 @@ def run_attack(
             if verbose:
                 print(f"[infra] {adapter.name}/{point.suite}/{point.user_task_id}+{point.injection_task_id}: "
                       f"all {attempts} attempt(s) failed in the infrastructure; not logged, --resume runs it again")
-            consecutive_infra += 1
-            if consecutive_infra >= _MAX_CONSECUTIVE_INFRA:
-                raise TargetUnavailableError(
-                    f"the target failed every attempt of {consecutive_infra} scenarios in a row; stopping. "
-                    "Check the target endpoint, then rerun the same command with --resume to continue")
+            # Only endpoint errors say the target is broken; a scenario lost to errors of its own
+            # (a context overflow, malformed tool calls) neither counts nor resets the streak.
+            if endpoint_failures == attempts:
+                consecutive_infra += 1
+                if consecutive_infra >= _MAX_CONSECUTIVE_INFRA:
+                    raise TargetUnavailableError(
+                        f"the target failed every attempt of {consecutive_infra} scenarios in a row with endpoint "
+                        "errors (unavailable, or rejecting every request); stopping. Check the target endpoint, "
+                        "then rerun the same command with --resume to continue")
             continue
         consecutive_infra = 0
 
         if logdir is not None:
-            engine.save_template_log(logdir, point.suite, point.user_task_id, point.injection_task_id, succeeded,
-                                     stop_at_first_success=stop_at_first_success)
             if infos:
                 _save_criteria_log(logdir, point, infos, succeeded)
+            engine.save_template_log(logdir, point.suite, point.user_task_id, point.injection_task_id, succeeded,
+                                     stop_at_first_success=stop_at_first_success, max_attempts=max_attempts)
 
         solved_all = [m for m in engine._attempt_meta if m["status"] == "success"]
         solved = solved_all[0] if solved_all else None
@@ -287,6 +335,7 @@ def run_attack(
             successful_attempts=len(solved_all),
             solved_sources=solved_sources,
             generation_stop_reason=engine.generation_stop_reason,
+            infrastructure_failures=infrastructure_failures,
         )
         summary.outcomes.append(outcome)
         if journal:

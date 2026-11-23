@@ -1,6 +1,7 @@
 """Provider clients shared by generators, diagnostic judges and benchmark adapters."""
 from __future__ import annotations
 
+import os
 import re
 import time
 import uuid
@@ -18,6 +19,17 @@ def google_omitted_fields(endpoint: ModelEndpoint) -> set[str]:
     return {{"max_tokens": "max_output_tokens"}.get(key, key) for key in endpoint.omit_parameters}
 
 
+def _omitted_request_fields(endpoint: ModelEndpoint) -> set[str]:
+    """The request fields ``omit_parameters`` removes on OpenAI-style requests. With
+    ``max_tokens_field: max_completion_tokens``, omitting ``max_tokens`` also removes the cap
+    AutoPI sends under that name (a ``max_completion_tokens`` set in ``extra_body`` with the
+    default field is the alias's own and is kept)."""
+    omitted = set(endpoint.omit_parameters)
+    if "max_tokens" in omitted and endpoint.max_tokens_field == "max_completion_tokens":
+        omitted.add("max_completion_tokens")
+    return omitted
+
+
 def require_no_reasoning_effort(endpoint: ModelEndpoint) -> None:
     """The native Anthropic and Google clients have no ``reasoning_effort`` request field, so
     the setting would be dropped silently. It reaches requests only on OpenAI-compatible paths
@@ -30,16 +42,98 @@ def require_no_reasoning_effort(endpoint: ModelEndpoint) -> None:
             "provider's own field (for example its thinking settings) in extra_body instead")
 
 
+# Reasoning delimiters a server can leave in a reply when no reasoning parser splits them off:
+# <think> (Qwen, DeepSeek R1 and others), [THINK] (Magistral), ◁think▷ (Kimi) and <seed:think>
+# (Seed-OSS). Each is (open, close). Callers remove reasoning only from a self-hosted endpoint
+# that may think (``ModelEndpoint.may_leak_reasoning``): a thinking-off or hosted endpoint
+# returns no reasoning in its reply, so tags there are content (an injected token the agent
+# quotes in a tool argument, a judge quoting the agent) and are kept.
+_REASONING_DELIMITERS = (
+    ("<think>", "</think>"), ("[THINK]", "[/THINK]"), ("◁think▷", "◁/think▷"), ("<seed:think>", "</seed:think>"),
+)
+_LEADING_REASONING = re.compile(
+    r"\A\s*(?:" + "|".join(re.escape(o) + ".*?" + re.escape(c) for o, c in _REASONING_DELIMITERS) + r")\s*", re.S)
+_UNCLOSED_REASONING = re.compile(
+    r"\A\s*(?:" + "|".join(re.escape(o) for o, _ in _REASONING_DELIMITERS) + ")")
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
+# The markers that open AutoPI's own answers: a generated line and a diagnostic verdict.
+_ANSWER_MARKER = re.compile(r"\[TEMPLATE_START\]|FAILURE_MODE:")
+
+
+def _without_leading_blocks(text: str) -> str:
+    while True:
+        match = _LEADING_REASONING.match(text)
+        if not match:
+            return text
+        text = text[match.end():]
+
+
 def visible_text(content: str | None, *, drop_unclosed: bool = False) -> str:
-    """Keep the visible answer when an endpoint leaks a reasoning delimiter. With
-    ``drop_unclosed``, a ``<think>`` block that never closes (the reply was cut off while the
-    model was still reasoning) is removed too, from its ``<think>`` to the end of the reply."""
-    content = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S)
-    if "</think>" in content:
-        content = content.rpartition("</think>")[2]
-    if drop_unclosed and "<think>" in content:
-        content = content.partition("<think>")[0]
-    return content.strip()
+    """The visible answer of a reply from a self-hosted endpoint that may think.
+
+    ``<think>`` reasoning (the format of Qwen-style templates) is removed wherever it sits, and
+    for a template that puts ``<think>`` in the prompt (the reply then holds only ``</think>``)
+    so is the text before the first ``</think>``. The other families (``[THINK]``, ``◁think▷``,
+    ``<seed:think>``) are removed only where the reply opens with them. With ``drop_unclosed``, a
+    block that never closes (the reply was cut off while reasoning) is reasoning to the end of the
+    reply. For a thinking target, serve the model with a reasoning parser: without one, text that
+    only looks like reasoning (for example a quoted ``</think>``) is removed too."""
+    text = _THINK_BLOCK.sub("", content or "")
+    head, sep, tail = text.partition("</think>")
+    if sep and "<think>" not in head:
+        text = tail
+    if drop_unclosed and "<think>" in text:
+        text = text.partition("<think>")[0]
+    text = _without_leading_blocks(text)
+    if drop_unclosed and _UNCLOSED_REASONING.match(text):
+        return ""
+    return text.strip()
+
+
+def strip_leading_reasoning(text: str | None) -> str:
+    """Remove reasoning that a generator or diagnostic-judge reply opens with, so that a draft
+    written inside it is not parsed as the answer: leading reasoning blocks, a block that never
+    closes (all reasoning, so nothing is left), and, for a template that put the opener in the
+    prompt, the text before a closing tag when AutoPI's answer starts after it. A closing tag
+    inside the answer itself (a generated line can carry such tokens) is kept as written."""
+    out = _without_leading_blocks(text or "")
+    if _UNCLOSED_REASONING.match(out):
+        return ""
+    for opener, closer in _REASONING_DELIMITERS:
+        head, sep, tail = out.partition(closer)
+        if sep and opener not in head and _ANSWER_MARKER.search(tail):
+            return tail
+    return out
+
+
+def http_status(exc: BaseException) -> int | None:
+    """The HTTP status of a provider or transport error, from whichever attribute carries it."""
+    for value in (getattr(exc, "status_code", None), getattr(getattr(exc, "response", None), "status_code", None),
+                  getattr(exc, "code", None)):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+_MODERATION_TEXT = re.compile(r"moderation|flagged|guardrail|content[ _-]?polic|content[ _]filter", re.IGNORECASE)
+
+
+def is_content_policy_rejection(exc: BaseException) -> bool:
+    """A request the provider refused on content-policy grounds, as opposed to one it could not
+    accept: Azure OpenAI's ``content_filter`` (inner code ``ResponsibleAIPolicyViolation``) and
+    OpenAI's ``invalid_prompt`` for a flagged prompt (both HTTP 400), and a moderation or
+    guardrail block answered with HTTP 403 (OpenRouter)."""
+    status = http_status(exc)
+    if status not in (400, 403):
+        return False
+    code = getattr(exc, "code", None)
+    reply = getattr(exc, "response", None)
+    text = " ".join(str(part) for part in (getattr(exc, "body", "") or "", getattr(reply, "text", "") or "", exc))
+    if status == 403:
+        return bool(_MODERATION_TEXT.search(text))
+    if code == "content_filter" or "ResponsibleAIPolicyViolation" in text or '"content_filter"' in text:
+        return True
+    return (code == "invalid_prompt" or "invalid_prompt" in text) and "flagged" in text.lower()
 
 
 def _remember_tool_call_extras(response, extras: OrderedDict, size: int = 1024) -> None:
@@ -131,11 +225,20 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                 kwargs["reasoning_effort"] = "none"
             else:
                 kwargs.setdefault("reasoning_effort", "medium")
-        for key in ("temperature", "top_p", "max_tokens"):
-            value = getattr(endpoint, key)
+        if role == "target":
+            # An alias's decoding settings shape the target's requests. IPI Arena's scoring judge
+            # and WorldSim keep the temperature and token caps IPI Arena sets on each call, which
+            # are part of its evaluation.
+            for key in ("temperature", "top_p", "max_tokens"):
+                value = getattr(endpoint, key)
+                if value is not None:
+                    kwargs[key] = value
+        if endpoint.max_tokens_field == "max_completion_tokens" and "max_tokens" in kwargs:
+            # OpenAI's reasoning models take the output cap only as max_completion_tokens.
+            value = kwargs.pop("max_tokens")
             if value is not None:
-                kwargs[key] = value
-        for key in endpoint.omit_parameters:
+                kwargs["max_completion_tokens"] = value
+        for key in _omitted_request_fields(endpoint):
             kwargs.pop(key, None)
         if endpoint.provider == "anthropic":
             # IPI Arena's client always sends temperature 0. Through the OpenAI-compatible API,
@@ -163,18 +266,21 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                 journal.emit("llm_response_original", role=role, call_id=call_id, response=response)
             if decoder:
                 recovered = decoder.recover(response.model_dump(mode="json"))
+                # Recovery requires thinking off, so the recovered text holds no reasoning to remove;
+                # reasoning tags in it are content and are kept.
                 for choice, replacement in zip(response.choices, recovered["choices"], strict=True):
                     choice.message.content = replacement["message"]["content"]
                     choice.message.tool_calls = None
                 if journal:
                     journal.emit("llm_response_recovered", role=role, call_id=call_id, response=recovered)
-            elif endpoint.tool_mode == "prompted":
+            elif endpoint.tool_mode == "prompted" and endpoint.may_leak_reasoning:
                 # AgentDojo's prompted parser (LocalLLM) scans message.content for
-                # ``<function=...>`` text. A thinking target emits a ``<think>...</think>``
-                # block first; strip it so a hypothetical call written inside the reasoning is
-                # not parsed as a real tool call. A block cut off before ``</think>`` (a token
-                # cap) is reasoning too and is removed. No-op when no reasoning delimiter is
-                # present, so a thinking-off target is unaffected.
+                # ``<function=...>`` text. A target that may think can open its reply with
+                # reasoning; remove that so a hypothetical call written inside the reasoning is
+                # not parsed as a real tool call (a reply cut off while reasoning is all
+                # reasoning). Only a leading block is removed, never tags later in the reply. A
+                # thinking-off target does not reason, so nothing is removed: a reasoning tag in
+                # its reply is content, such as an injected token it quotes in a tool argument.
                 for choice in getattr(response, "choices", None) or []:
                     message = getattr(choice, "message", None)
                     if message is not None and getattr(message, "content", None):
@@ -189,12 +295,38 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
     return client
 
 
+# A rate-limited request (HTTP 429) is retried at least this many times, waiting as long as the
+# server's Retry-After asks (at most _MAX_RETRY_AFTER seconds each time), before the run stops.
+_RATE_LIMIT_RETRIES = 5
+_MAX_RETRY_AFTER = 120.0
+
+
+def _retry_after_seconds(response) -> float | None:
+    """The wait a ``Retry-After`` header asks for, in seconds (a number or an HTTP date)."""
+    value = (getattr(response, "headers", None) or {}).get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        from datetime import datetime, timezone
+        from email.utils import parsedate_to_datetime
+
+        return max(0.0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _post_json(url: str, payload: dict, endpoint: ModelEndpoint, *, headers=None, journal=None,
                role="refiner", call_id=None):
     """POST with the endpoint's timeout and retries and return the JSON reply. A timeout, a
-    connection error, HTTP 429 or a server error is retried with backoff; any other HTTP
-    error is raised at once."""
-    for attempt in range(endpoint.retries + 1):
+    connection error or a server error is retried with backoff, HTTP 429 at least
+    ``_RATE_LIMIT_RETRIES`` times and as long as the server's ``Retry-After`` asks; any other
+    HTTP error is raised at once."""
+    attempt = 0
+    while True:
         try:
             response = requests.post(url, json=payload, timeout=endpoint.timeout, headers=headers)
             if journal:
@@ -203,12 +335,17 @@ def _post_json(url: str, payload: dict, endpoint: ModelEndpoint, *, headers=None
             response.raise_for_status()
             return response.json()
         except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
-            retryable = not isinstance(exc, requests.HTTPError) or exc.response.status_code >= 500 or exc.response.status_code == 429
+            reply = exc.response if isinstance(exc, requests.HTTPError) else None
+            status = getattr(reply, "status_code", None)
+            retryable = status is None or status >= 500 or status == 429
+            limit = max(endpoint.retries, _RATE_LIMIT_RETRIES) if status == 429 else endpoint.retries
             if journal:
                 journal.emit("llm_error", role=role, call_id=call_id, retry=attempt, error=str(exc))
-            if not retryable or attempt >= endpoint.retries:
+            if not retryable or attempt >= limit:
                 raise
-            time.sleep(min(2 ** attempt, 10))
+            wait = _retry_after_seconds(reply) if status in (429, 503) else None
+            time.sleep(min(wait, _MAX_RETRY_AFTER) if wait is not None else min(2 ** attempt, 30 if status == 429 else 10))
+            attempt += 1
 
 
 def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max_tokens=1024,
@@ -217,7 +354,10 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
     temperature = endpoint.temperature if endpoint.temperature is not None else temperature
     max_tokens = endpoint.max_tokens if endpoint.max_tokens is not None else max_tokens
     if endpoint.provider in {"openai-compatible", "openai"}:
-        url = (endpoint.base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+        # An openai endpoint without its own URL goes where the OpenAI SDK sends the target:
+        # OPENAI_BASE_URL when it is set, else the public API.
+        default = (os.environ.get("OPENAI_BASE_URL") if endpoint.provider == "openai" else None) or "https://api.openai.com/v1"
+        url = (endpoint.base_url or default).rstrip("/") + "/chat/completions"
         payload = {"model": endpoint.model, "messages": [{"role": "user", "content": prompt}],
                    "temperature": temperature, "max_tokens": max_tokens}
         if endpoint.top_p is not None:
@@ -227,7 +367,9 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
             payload["reasoning_effort"] = endpoint.reasoning_effort
         if endpoint.provider == "openai-compatible" and endpoint.thinking != "server":
             payload["chat_template_kwargs"] = {**payload.get("chat_template_kwargs", {}), "enable_thinking": endpoint.thinking == "on"}
-        for key in endpoint.omit_parameters:
+        if endpoint.max_tokens_field == "max_completion_tokens":
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+        for key in _omitted_request_fields(endpoint):
             payload.pop(key, None)
         decoder = get_decoder(endpoint.tokenizer_path) if endpoint.tokenizer_path else None
         if decoder:
@@ -295,11 +437,15 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
                    "stream": False, "options": options}
         if endpoint.thinking != "server":
             payload["think"] = endpoint.thinking == "on"
-        if endpoint.extra_body:
-            payload.update(endpoint.extra_body)
+        extra = dict(endpoint.extra_body or {})
+        if isinstance(extra.get("options"), dict):
+            # Ollama's own options (for example num_ctx) join AutoPI's sampling settings.
+            options.update(extra.pop("options"))
+        payload.update(extra)
+        ollama_names = {"max_tokens": "num_predict"}
         for key_name in endpoint.omit_parameters:
             payload.pop(key_name, None)
-            options.pop(key_name, None)
+            options.pop(ollama_names.get(key_name, key_name), None)
         key = endpoint.api_key()  # "EMPTY" when no api_key_env is configured
         call_id = uuid.uuid4().hex
         if journal:

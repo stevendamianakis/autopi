@@ -3,7 +3,9 @@
 Each role selects a named endpoint from `--models-config`, or a short spec such
 as `vllm:8000:MODEL_ID`, `openai:MODEL_ID`, `anthropic:MODEL_ID`,
 `google:MODEL_ID` or `ollama:MODEL_ID`. An endpoint's URL can be on any host.
-There is no dependency on the experiment servers or a particular model family.
+There is no dependency on the experiment servers. Two settings follow particular
+model families and are described below: the thinking switch (`thinking`) and the
+removal of reasoning a self-hosted model leaves in its reply.
 
 The YAML `models` mapping supports these fields:
 
@@ -14,18 +16,35 @@ The YAML `models` mapping supports these fields:
 | `base_url` | Optional custom API URL; required for generic compatible endpoints; `ollama` defaults to `OLLAMA_BASE_URL` or `http://localhost:11434` |
 | `api_key_env` | Name of an environment variable containing the credential |
 | `tool_mode` | AgentDojo: `native` API tools (default) or `prompted` text tools; `--tool-calling` overrides it |
-| `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`) |
+| `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`). It is sent as `chat_template_kwargs.enable_thinking`, the switch Qwen-style templates read; a family with another switch (GPT-OSS, DeepSeek) ignores it, so use `server` and set the family's own field in `extra_body` |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
-| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides (`anthropic`: `max_tokens` only) |
-| `timeout`, `retries` | Request timeout in seconds and provider retry count |
+| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides for the target and the generator (`anthropic`: `max_tokens` only). An IPI Arena scoring judge or WorldSim alias does not send them: the benchmark's own per-call values, part of its scoring, are kept |
+| `max_tokens_field` | `max_tokens` (default) or `max_completion_tokens`, for `openai`/`openai-compatible` endpoints. OpenAI's o-series reasoning models take the output cap only as `max_completion_tokens`; set this and `omit_parameters: [temperature]` for them. Models that support tool calling only through the Responses API cannot be targets (see below) |
+| `timeout`, `retries` | Request timeout in seconds and the retry count for connection, timeout, rate-limit and server errors. On the generator's HTTP path (`openai-compatible`, `openai`, `ollama`) a rate limit (HTTP 429) is retried at least five times and waits as long as the server's `Retry-After` asks; the provider SDKs (targets, IPI Arena clients, Anthropic and Google generators) apply their own retry rules with this count |
 | `reasoning_effort` | Optional reasoning-effort field, sent on OpenAI-compatible request paths (`openai-compatible`, `openai`, `ollama`, and every IPI Arena client). The native `anthropic` and `google` clients (AgentDojo targets, generators) have no such field and refuse it; use `extra_body` there |
 | `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`) |
-| `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires |
+| `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google; with `max_tokens_field: max_completion_tokens`, also that field). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires. On an Ollama generator, `max_tokens` here drops its `num_predict` option |
 
 The generator and its diagnostic judge use `--refiner` and share one configured
 endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
 it defaults to the target. `--worldsim` is its tool simulator and defaults to
-the benchmark judge. These have independent model aliases and URLs.
+the benchmark judge. These have independent model aliases and URLs. A judge or
+WorldSim alias's `temperature`, `top_p` and `max_tokens` are **not** sent: IPI
+Arena sets its own on each judge and simulator call (temperature 0, a 4,096-token
+judge cap, a 2,048-token WorldSim cap), and those are part of its scoring. That
+cap includes any reasoning, so a reasoning model there may need a low reasoning
+effort or thinking off. (`omit_parameters`, `extra_body`, `reasoning_effort` and the
+removals a provider requires still apply to every role, since they describe what a
+model accepts, not how it is scored.)
+
+An Ollama generator alias merges an `extra_body.options` mapping (for example
+`num_ctx`) into AutoPI's sampling options rather than replacing them, and sends
+`top_p`, the `api_key_env` value as a bearer token, and retries like the other
+generators. Such `options` reach only the generator, which uses Ollama's native
+API: an Ollama target uses the OpenAI-compatible API, which cannot set the context
+window, so give the model enough context on the server (for example
+`OLLAMA_CONTEXT_LENGTH` or a Modelfile); Ollama's default context is small enough to
+cut long agent conversations.
 
 Hosted AgentDojo targets use the benchmark's native provider clients. Anthropic
 requests carry no sampling parameters: the Anthropic API version that the
@@ -45,14 +64,37 @@ your results.
 Gemini 3 and later reject a request whose tool calls lack the thought signatures
 they came with, and both benchmarks rebuild tool calls without them, so AutoPI's
 clients put each signature back on its call: through AgentDojo's Gemini client and
-through the OpenAI-compatible API (`extra_content`). An Ollama generator sends
-`top_p`, the `api_key_env` value as a bearer token, and retries like the other
-generators.
+through the OpenAI-compatible API (`extra_content`).
 See the official [Claude compatibility documentation](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk)
 and [Gemini compatibility documentation](https://aistudio.google.com/docs/openai).
 Any other service can be configured as `openai-compatible` with its own URL and
 API-key environment variable. Custom model implementations can also be supplied
 through the Python adapter interface.
+
+**Provider coverage.** Open-weight models (vLLM, Ollama and other OpenAI-compatible
+servers), Anthropic, Google Gemini and OpenAI chat models are configured directly.
+All of AutoPI's and the benchmarks' clients use the Chat Completions API (or the
+provider's native API), not OpenAI's Responses API:
+- **OpenAI o-series reasoning models** need `max_tokens_field: max_completion_tokens`
+  and `omit_parameters: [temperature]`; see the `openai-reasoning-example` alias in
+  `configs/models.example.yaml`.
+- A model that supports **tool calling only through the Responses API** (OpenAI's
+  model pages list which, for example GPT-6 Astra and GPT-6.1 Sol) cannot be a target
+  on either benchmark. It can still be the generator, which sends no tools.
+- **Azure OpenAI** works as an `openai-compatible` endpoint through its
+  OpenAI-compatible (v1) URL with key authentication.
+- **AWS Bedrock** (SigV4) and **Vertex AI** sign-in with service accounts or
+  application-default credentials are not supported. A Gemini model is reached
+  through the Gemini API with an API key (`GOOGLE_API_KEY`, or `GEMINI_API_KEY` as
+  the google-genai SDK reads it).
+
+The provider SDKs also read environment variables that reroute requests
+(`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`,
+`GOOGLE_VERTEX_BASE_URL`, `GOOGLE_GENAI_USE_VERTEXAI`). AgentDojo targets and the
+Anthropic and Google generators go through those SDKs, and the OpenAI generator
+follows `OPENAI_BASE_URL` too. IPI Arena's clients use each endpoint's `base_url` or
+the provider's public URL. The run manifest records which of these variables were
+set (a URL without any `user:password` part).
 
 `--target-thinking`, `--target-max-tokens` and `--tool-calling` override the
 target alias. Named aliases otherwise retain their own settings. Legacy
@@ -118,13 +160,39 @@ rewrites tool-like text in such replies, the generated injections lose that text
 check them in the traces, and serve the generator without a parser or enable
 recovery (below).
 
-An AgentDojo prompted target also has its `<think>...</think>` reasoning removed
-from the reply before tool parsing, so a thinking model does not have a
-hypothetical call inside its reasoning executed. A reply cut off inside a
-`<think>` block (for example by a token cap) loses everything from that `<think>`
-on. A reply whose `<think>` opening is in the chat template rather than the
-reply cannot be told apart from an answer, so for a thinking target serve vLLM
-with a `--reasoning-parser`, which keeps the reasoning out of the reply.
+### Reasoning in replies
+
+The threat model gives the attacker the agent's visible replies and tool calls, not
+its reasoning. How AutoPI keeps reasoning out depends on where it appears:
+
+- **Anthropic** returns thinking as typed blocks. AgentDojo keeps them in its own
+  messages (and its scoring reads them), but AutoPI drops them from the transcript its
+  diagnostic judge and context blending read.
+- **Gemini** returns no thoughts unless `include_thoughts` is requested, and AgentDojo
+  would turn returned thoughts into ordinary text. A target alias that requests them
+  is refused at setup.
+- **A self-hosted model that thinks** can leave reasoning in the reply text when the
+  server has no reasoning parser. Serve such a target with a vLLM
+  `--reasoning-parser` (or the server's equivalent), which keeps reasoning out of the
+  scored reply, the tool-call text and the attacker's view. A **native** AgentDojo
+  target needs it, since AgentDojo scores its reply as returned.
+- **Without a parser**, AutoPI removes leaked reasoning only from a self-hosted
+  endpoint whose thinking is not `off`: from a prompted AgentDojo target before tool
+  parsing (so a call drafted inside the reasoning is not executed) and from IPI Arena
+  replies. `<think>` reasoning is removed wherever it sits, including the text before
+  the first `</think>` of a template that puts the opener in the prompt, and a block
+  cut off before it closes; `[THINK]`, `◁think▷` and `<seed:think>` are removed only
+  where the reply opens with them. Text that merely looks like reasoning, such as a
+  quoted `</think>`, can then be removed too, which is one more reason to use a
+  parser.
+- **A thinking-off or hosted endpoint** does not return reasoning in its reply, so
+  nothing is removed. A reasoning-like tag there is content, for example an injected
+  token the agent quotes in a tool argument. A family that reasons whatever
+  `thinking` says (GPT-OSS, DeepSeek-R1) should be configured with `thinking: server`.
+- **The generator and the diagnostic judge**, when self-hosted and not thinking-off,
+  have reasoning that opens their reply removed before the line or the
+  `FAILURE_MODE` is parsed, including the text before a closing tag when AutoPI's
+  answer follows it. A closing tag inside the generated line itself is kept.
 
 ## Recovering text removed by a server-side tool parser
 
@@ -155,7 +223,8 @@ Recovery is opt-in because it is not a standard OpenAI API feature and requires
 the correct tokenizer. Ordinary endpoints use their visible text. **Do not apply
 raw recovery to IPI Arena target/judge/WorldSim clients**: those use native tools
 and must retain the server's parsed tool calls. Its generator can use recovery.
-Reasoning delimiters are removed from IPI Arena replies.
+Recovery requires thinking off, so recovered text is used as decoded, with no
+reasoning removed.
 
 ## Output provenance
 

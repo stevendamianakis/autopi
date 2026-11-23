@@ -6,54 +6,17 @@ import hashlib
 import json
 import os
 from collections import OrderedDict
-from dataclasses import dataclass
-
-from autopi.core.refiner import RefinerConfig
-
-
-@dataclass
-class ModelSpec:
-    """A parsed model spec. ``provider`` is an AgentDojo provider/ModelsEnum string;
-    ``model_id`` is the served model name for local/openai-compatible endpoints;
-    ``port`` is the local serving port (vLLM/Ollama)."""
-
-    raw: str
-    provider: str
-    model_id: str | None = None
-    port: str | None = None
-
-
-def parse_model_spec(spec: str) -> ModelSpec:
-    """Parse a CLI model string into a :class:`ModelSpec`.
-
-    Forms: ``local`` | ``local:<model_id>`` | ``vllm:<port>`` | ``vllm:<port>:<model_id>`` |
-    ``openai-compatible`` | ``<ModelsEnum value>`` (e.g. ``gpt-4o-2024-05-13``).
-    """
-    s = spec.strip()
-    if s.startswith("vllm:"):
-        parts = s.split(":")
-        port = parts[1] if len(parts) > 1 else None
-        model_id = parts[2] if len(parts) > 2 else None
-        return ModelSpec(raw=s, provider="local", model_id=model_id, port=port)
-    if s == "local" or s.startswith("local:"):
-        model_id = s.split(":", 1)[1] if ":" in s else None
-        return ModelSpec(raw=s, provider="local", model_id=model_id)
-    if s == "vllm_parsed":
-        return ModelSpec(raw=s, provider="vllm_parsed")
-    if s == "openai-compatible":
-        return ModelSpec(raw=s, provider="openai-compatible", model_id=os.environ.get("OPENAI_COMPATIBLE_MODEL_ID"))
-    # Otherwise treat as a hosted ModelsEnum value (provider resolved by AgentDojo).
-    return ModelSpec(raw=s, provider="hosted", model_id=None)
-
 
 TARGET_THINKING_CHOICES = ("off", "on", "server")
 _THINKING_ALIASES = {"0": "off", "false": "off", "no": "off", "1": "on", "true": "on", "yes": "on", "default": "server"}
 
 
 def resolve_target_thinking(value: str | None = None) -> str:
-    """Thinking mode of a locally served target: ``off`` (default, the setting of the
-    reported runs), ``on``, or ``server`` (send nothing and let the server decide).
-    An explicit ``value`` wins over the ``AUTOPI_TARGET_THINKING`` environment variable."""
+    """Resolve an explicit target thinking request to ``off``, ``on`` or ``server`` (send nothing
+    and let the server decide). ``off`` is the setting of the reported runs and the fallback here,
+    but the CLI calls this only when a thinking mode was actually requested (by the flag, the
+    ``AUTOPI_TARGET_THINKING`` environment variable, or a ``vllm:`` spec); a named alias otherwise
+    keeps its own thinking. An explicit ``value`` wins over the environment variable."""
     v = (value or os.environ.get("AUTOPI_TARGET_THINKING") or "off").strip().lower()
     v = _THINKING_ALIASES.get(v, v)
     if v not in TARGET_THINKING_CHOICES:
@@ -73,37 +36,6 @@ def resolve_target_max_tokens(value: int | None = None) -> int | None:
     return value
 
 
-def apply_target_request_settings(client, *, thinking: str = "server", max_tokens: int | None = None) -> bool:
-    """Make every chat completion sent through ``client`` (an OpenAI-compatible client)
-    carry the target's thinking mode and output cap. Returns False when there is nothing
-    to do or the client has no chat-completions interface.
-
-    ``thinking`` ``off`` / ``on`` sets ``chat_template_kwargs.enable_thinking`` (the switch
-    Qwen 3 chat templates read) and overrides a value the caller already put there.
-    ``server`` leaves the request alone. ``max_tokens`` is added only when the call does
-    not set one itself."""
-    if thinking == "server" and max_tokens is None:
-        return False
-    completions = getattr(getattr(client, "chat", None), "completions", None)
-    create = getattr(completions, "create", None)
-    if create is None:
-        return False
-
-    def _create(*args, **kwargs):
-        if thinking != "server":
-            extra = dict(kwargs.get("extra_body") or {})
-            template_kwargs = dict(extra.get("chat_template_kwargs") or {})
-            template_kwargs["enable_thinking"] = thinking == "on"
-            extra["chat_template_kwargs"] = template_kwargs
-            kwargs["extra_body"] = extra
-        if max_tokens is not None and kwargs.get("max_tokens") is None:
-            kwargs["max_tokens"] = max_tokens
-        return create(*args, **kwargs)
-
-    completions.create = _create
-    return True
-
-
 def send_developer_as_system(client) -> None:
     """AgentDojo's native client sends its system prompt with the OpenAI ``developer`` role.
     A self-hosted model's chat template knows only ``system``: recent vLLM converts the role,
@@ -119,19 +51,6 @@ def send_developer_as_system(client) -> None:
         return create(*args, **kwargs)
 
     client.chat.completions.create = _create
-
-
-def _pipeline_clients(pipeline) -> list:
-    """The distinct LLM clients inside an AgentDojo pipeline, nested tool loops included."""
-    found, seen, stack = [], set(), [pipeline]
-    while stack:
-        element = stack.pop()
-        client = getattr(element, "client", None)
-        if client is not None and id(client) not in seen:
-            seen.add(id(client))
-            found.append(client)
-        stack.extend(getattr(element, "elements", None) or [])
-    return found
 
 
 def build_target_pipeline(
@@ -152,6 +71,7 @@ def build_target_pipeline(
 
     endpoint = endpoint or resolve_endpoint(spec)
     endpoint = override_endpoint(endpoint, thinking=target_thinking, max_tokens=target_max_tokens)
+    endpoint.refuse_returned_reasoning()
     if endpoint.provider in {"openai-compatible", "openai", "ollama"}:
         import openai
         from agentdojo.agent_pipeline.llms.local_llm import LocalLLM
@@ -378,15 +298,3 @@ def _instrument_google(resource, endpoint, journal):
         return result
 
     resource.generate_content = call
-
-
-def refiner_config(spec: str, catalog=None) -> RefinerConfig:
-    from autopi.models.endpoints import resolve_endpoint
-
-    return RefinerConfig(endpoint=resolve_endpoint(spec, catalog, role="refiner"))
-
-
-def refiner_model_name(spec: str, catalog=None) -> str:
-    from autopi.models.endpoints import resolve_endpoint
-
-    return resolve_endpoint(spec, catalog, role="refiner").model

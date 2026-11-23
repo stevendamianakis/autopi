@@ -186,7 +186,9 @@ def test_provider_errors_of_every_client_are_infrastructure_failures():
     def wrapped(exc):  # what AgentDojo's Anthropic client raises after its three tries
         return tenacity.RetryError(tenacity.Future.construct(3, exc, True))
 
-    provider_errors = [
+    # An unreachable endpoint (a connection failure, a rate limit or a server error) is an
+    # outage, kept apart from an error of the attempt itself (see test below).
+    outages = [
         openai.APIConnectionError(request=httpx.Request("POST", "https://api.example.invalid/v1")),
         anthropic.APIConnectionError(request=request),
         anthropic.RateLimitError("rate", response=status(429), body=None),
@@ -195,9 +197,38 @@ def test_provider_errors_of_every_client_are_infrastructure_failures():
         errors.ClientError(429, {"error": {"code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED"}}),
         errors.ServerError(503, {"error": {"code": 503, "message": "busy", "status": "UNAVAILABLE"}}),
     ]
-    assert [_classify_infra_error(exc) for exc in provider_errors] == ["provider_error"] * len(provider_errors)
+    assert [_classify_infra_error(exc) for exc in outages] == (
+        ["transport_error"] * 2 + ["provider_unavailable"] * 5)
     assert _classify_infra_error(TypeError("a bug")) is None             # bugs still stop the run
     assert _classify_infra_error(wrapped(TypeError("a bug"))) is None
+
+
+def test_endpoint_errors_count_toward_the_target_down_stop_but_scenario_errors_do_not():
+    pytest.importorskip("agentdojo")
+    openai = pytest.importorskip("openai")
+    import json as _json
+
+    import httpx
+
+    from autopi.adapters.agentdojo import _SCENARIO_KINDS, _classify_infra_error
+
+    request = httpx.Request("POST", "https://api.example.invalid/v1")
+    # Errors of the endpoint itself count: unreachable, or rejecting the request (for example a
+    # parameter the model does not support, which names max_tokens but is no context overflow).
+    unreachable = openai.APIConnectionError(request=request)
+    unsupported = openai.BadRequestError(
+        "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens'.",
+        response=httpx.Response(400, request=request), body=None)
+    for error in (unreachable, unsupported):
+        assert _classify_infra_error(error) not in _SCENARIO_KINDS
+    assert _classify_infra_error(unsupported) == "provider_error"
+    # Errors tied to one scenario do not: a context overflow, malformed tool output.
+    overflow = openai.BadRequestError(
+        "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.",
+        response=httpx.Response(400, request=request), body=None)
+    assert _classify_infra_error(overflow) == "context_length"
+    assert _classify_infra_error(_json.JSONDecodeError("x", "y", 0)) == "model_crash"
+    assert {"context_length", "model_crash"} <= _SCENARIO_KINDS
 
 
 def test_all_ipi_scenarios_and_server_conversion_fixes_are_bundled():

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -115,16 +116,25 @@ def _generator_unreachable(exc: BaseException) -> bool:
     return status is not None and (status == 429 or status >= 500)
 
 
+_INVALID_KEY = re.compile(r"API_KEY_INVALID|API key not valid|invalid[ _]api[ _]key|incorrect api key", re.IGNORECASE)
+
+
 def _generator_misconfigured(exc: BaseException) -> bool:
     """A configuration or authentication error rather than a transient one: a missing API key
-    or provider SDK, a missing tokenizer file, or HTTP 401/403/404. It recurs on every scenario, so the run
-    stops (before the scenario is logged) instead of recording seed-only failures that
-    ``--resume`` would then skip. A plain HTTP 400 stays a skipped, per-prompt failure."""
+    or provider SDK, a missing tokenizer file, HTTP 401/402/403/404, or an invalid API key (which
+    Gemini answers with HTTP 400). It recurs on every scenario, so the run stops (before the
+    scenario is logged) instead of recording seed-only failures that ``--resume`` would then
+    skip. A moderation block (HTTP 403 for a flagged prompt) is a refusal, not a configuration
+    error, and a plain HTTP 400 stays a skipped, per-prompt failure."""
+    from autopi.models.clients import is_content_policy_rejection
     from autopi.models.endpoints import EndpointConfigError
 
     if isinstance(exc, (EndpointConfigError, ImportError, FileNotFoundError)):
         return True
-    return _http_status(exc) in (401, 403, 404)
+    if is_content_policy_rejection(exc):
+        return False
+    status = _http_status(exc)
+    return status in (401, 402, 403, 404) or (status == 400 and bool(_INVALID_KEY.search(str(exc))))
 
 
 class TaxonomyEngine:
@@ -133,7 +143,9 @@ class TaxonomyEngine:
     All knobs mirror the original constructor and its ``TAX_*`` environment overrides, so
     existing run scripts/presets behave identically. ``awareness_mode`` (or
     ``TAX_AWARENESS_MODE``) selects context-blind mode 1, original-task-aware mode 2, or
-    new-task-aware mode 3 (writes the goal directly, no placeholder).
+    new-task-aware mode 3 (writes the goal directly, no placeholder). The default is mode 3,
+    the paper's setting and the command line's, with no exploit variants (``paraphrase_reps``
+    0), so the default schedule is the seed and the L1 sweep, as ``l1.yaml``.
     """
 
     name = "taxonomy_refined"
@@ -147,7 +159,7 @@ class TaxonomyEngine:
         self,
         *,
         refiner_model: str = "",
-        paraphrase_reps: int = 1,
+        paraphrase_reps: int = 0,
         taxonomy_path: str | Path | None = None,
         use_judge: bool | None = None,
         use_context: bool | None = None,
@@ -172,6 +184,7 @@ class TaxonomyEngine:
         seed_name: str | None = None,
         max_consecutive_refiner_errors: int | None = None,
         max_consecutive_unusable: int | None = None,
+        max_consecutive_refiner_400: int | None = None,
     ) -> None:
         if not refiner_model:
             raise ValueError("refiner_model must be explicitly configured")
@@ -182,11 +195,17 @@ class TaxonomyEngine:
         self.max_consecutive_unusable = int(
             max_consecutive_unusable if max_consecutive_unusable is not None
             else os.environ.get("TAX_MAX_CONSECUTIVE_UNUSABLE", "200"))
-        if self.max_consecutive_refiner_errors < 1 or self.max_consecutive_unusable < 1:
-            raise ValueError("consecutive refiner error and unusable candidate limits must be positive")
+        self.max_consecutive_refiner_400 = int(
+            max_consecutive_refiner_400 if max_consecutive_refiner_400 is not None
+            else os.environ.get("TAX_MAX_CONSECUTIVE_REFINER_400", "25"))
+        if (self.max_consecutive_refiner_errors < 1 or self.max_consecutive_unusable < 1
+                or self.max_consecutive_refiner_400 < 1):
+            raise ValueError("consecutive refiner error, HTTP 400 and unusable candidate limits must be positive")
         # Keep request-error streaks across scenarios, separately for generation and diagnosis:
-        # a working judge must not hide a repeatedly failing generator (or vice versa).
+        # a working judge must not hide a repeatedly failing generator (or vice versa). HTTP 400
+        # replies have their own, longer streak (see _check_refiner_error).
         self._refiner_error_streaks = {"refiner": 0, "diagnostic_judge": 0}
+        self._refiner_400_streaks = {"refiner": 0, "diagnostic_judge": 0}
         self._consecutive_unusable = 0
         self.generation_stop_reason: str | None = None
         seqs = load_sequences(taxonomy_path)
@@ -269,12 +288,12 @@ class TaxonomyEngine:
             if self.stack_only:
                 print(f"[TAXREFINER] STACK-ONLY L{self.stack_only}: sweeping only the {self.num_combos} "
                       f"{self.stack_only}-way combinations of the pool (no singles / other depths)")
-            if self.num_combos == 0 and not self.use_seed and self.seed_paraphrase_reps == 0:
-                # Without a seed and with an empty sweep there is nothing to try: the run would
-                # make zero target calls and report 0% for every scenario. Fail fast instead.
+            if self.num_combos == 0:
+                # A sweep that selects nothing is a configuration error. Without a seed the run would
+                # make no target call, and with one it would quietly become a seed-only run.
                 raise ValueError(
-                    "the schedule makes no attempts: the sweep selected 0 combinations and there is no "
-                    "seed. Widen --techniques/--max-sequences/--stack-pool, lower --stack-only, or add a seed")
+                    "the sweep selects 0 combinations. Widen --techniques/--max-sequences/--stack-pool or "
+                    "lower --stack-only; for a run without a sweep use --seed-only")
             max_attempts = self.seed_paraphrase_reps + self.num_combos * (1 + paraphrase_reps)
 
         # ── inlined RefinedInstructionsAttack base state ──
@@ -316,7 +335,7 @@ class TaxonomyEngine:
         selected_mode = (
             awareness_mode
             if awareness_mode is not None
-            else (mode_env if mode_env and mode_env.strip() else (2 if legacy_usertask_aware else 1))
+            else (mode_env if mode_env and mode_env.strip() else (2 if legacy_usertask_aware else 3))
         )
         try:
             self.awareness_mode = int(selected_mode)
@@ -342,6 +361,7 @@ class TaxonomyEngine:
         self._para_reasonings: str = ""
         self._last_para_raw: str = ""
         self._seq_transcript: dict[str, list] = {}
+        self._chain_transcripts: dict[str, list | None] = {}
         self._cur_seq_signals: list[str] = []
         if os.environ.get("TAX_RESUME_AFTER_ATTEMPT", "0").strip() not in ("", "0"):
             # The process-level resume rebuilt a partial history it could not report or follow
@@ -364,10 +384,19 @@ class TaxonomyEngine:
         return self._combos.size if hasattr(self._combos, "size") else len(self._combos)
 
     def _query(self, prompt: str) -> str:
+        from autopi.models.clients import strip_leading_reasoning
+
         config = self._refiner_config
         if getattr(self, "_querying_judge", False):
             config = replace(config, role="diagnostic_judge") if config else RefinerConfig(role="diagnostic_judge")
-        return query_refiner_llm(self.refiner_model, prompt, config)
+        # A self-hosted generator or judge that thinks without a server-side reasoning parser opens
+        # its reply with reasoning. Remove it, so a draft line or a FAILURE_MODE written inside the
+        # reasoning is not parsed as the answer. A thinking-off or hosted endpoint returns no
+        # reasoning in its reply, which is then used as written; the visible line, delimiters and
+        # any structural tokens it contains are kept either way.
+        reply = query_refiner_llm(self.refiner_model, prompt, config)
+        endpoint = getattr(config, "endpoint", None)
+        return strip_leading_reasoning(reply) if getattr(endpoint, "may_leak_reasoning", True) else reply
 
     def _build_combo_schedule(self) -> list[list[dict]]:
         combos, pool_ids = build_combo_schedule(
@@ -390,10 +419,15 @@ class TaxonomyEngine:
             self._cur_para_failed.append(last["template"])
         elif last and last["phase"] == "seed_paraphrase" and last["template"]:
             self._seed_para_failed.append(last["template"])
+        if last and last["phase"] in ("paraphrase", "seed_paraphrase") and last["template"]:
+            # What the judge diagnoses before this line's next variant (see _chain_transcript).
+            self._chain_transcripts[last["sequence_id"]] = self._last_messages
 
-    def mark_attempt_infra_failed(self, failure_kind: str) -> None:
+    def mark_attempt_infra_failed(self, failure_kind: str, info: dict | None = None) -> None:
         self._infra_failures.append(failure_kind)
         self._set_last_status_if_pending(f"infra_{failure_kind}")
+        if info and self._attempt_meta:
+            self._attempt_meta[-1]["infra_info"] = dict(info)
 
     def mark_succeeded(self) -> None:
         """Mark the current (just-succeeded) attempt as a solving one, so the trace and
@@ -402,6 +436,9 @@ class TaxonomyEngine:
         going after a success (``stop_at_first_success=False``)."""
         self._succeeded_templates.append(self._current_template)
         self._set_last_status_if_pending("success")
+        last = self._attempt_meta[-1] if self._attempt_meta else None
+        if last and last["phase"] in ("paraphrase", "seed_paraphrase"):
+            self._chain_transcripts[last["sequence_id"]] = None   # a success is not a failure to explain
 
     def _attempts_recorded(self) -> int:
         return len(self._failed_templates) + len(self._infra_failures) + len(self._succeeded_templates)
@@ -481,6 +518,7 @@ class TaxonomyEngine:
         self._para_reasonings = ""
         self._last_para_raw = ""
         self._seq_transcript = {}
+        self._chain_transcripts = {}
         self._cur_seq_signals = []
         self._attempt_meta = [
             {
@@ -528,9 +566,25 @@ class TaxonomyEngine:
         if self.strict_refiner or getattr(e, "fatal", False):
             raise RuntimeError("Taxonomy judge/refiner request failed") from e
         role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
-        if _http_status(e) == 400:
-            # A recognized per-prompt rejection remains skippable, subject to the candidate limit.
+        from autopi.models.clients import is_content_policy_rejection
+
+        if is_content_policy_rejection(e):
+            # The provider refused this prompt on content-policy grounds: a refusal, skipped like an
+            # unusable answer. The endpoint accepted the request's settings, so the streaks reset.
             self._refiner_error_streaks[role] = 0
+            self._refiner_400_streaks[role] = 0
+            return
+        if _http_status(e) == 400:
+            # One rejected prompt stays a skipped candidate. A generator that rejects every request
+            # (for example a model that refuses the request's temperature or max_tokens) would
+            # instead turn a whole run into seed-only results, so many 400s in a row stop it.
+            self._refiner_error_streaks[role] = 0
+            self._refiner_400_streaks[role] += 1
+            if self._refiner_400_streaks[role] >= self.max_consecutive_refiner_400:
+                raise GeneratorUnavailableError(
+                    f"the {role} rejected {self._refiner_400_streaks[role]} requests in a row with HTTP 400 "
+                    f"({str(e)[:160]}). Check the endpoint's settings (for example temperature or max_tokens, "
+                    "which some models reject), then rerun with --resume to continue") from e
             return
         self._refiner_error_streaks[role] += 1
         if self._refiner_error_streaks[role] >= self.max_consecutive_refiner_errors:
@@ -542,6 +596,7 @@ class TaxonomyEngine:
     def _refiner_request_succeeded(self) -> None:
         role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
         self._refiner_error_streaks[role] = 0
+        self._refiner_400_streaks[role] = 0
 
     def _judge_text(self, messages: list, goal: str = "") -> str | None:
         self._judge_mode = None
@@ -573,11 +628,15 @@ class TaxonomyEngine:
             note += f" ({reason})"
         return note
 
-    def _last_failed_transcript(self) -> list | None:
-        """Transcript of the last attempt, for the judge to diagnose in a paraphrase chain.
-        None when that attempt succeeded, which can happen only when the driver keeps going
-        after a success: a success is not a failure to explain."""
-        return None if self._last_security else self._last_messages
+    def _chain_transcript(self, chain_id: str, source_key: str) -> list | None:
+        """The transcript the judge diagnoses before the next variant of one line: the line's
+        last failed variant, else the line's own failed attempt. A variant the generator could
+        not write ran nothing and changes nothing, so the judge never reads another line's
+        transcript. None when the line's last variant succeeded (a run that continues after a
+        success)."""
+        if chain_id in self._chain_transcripts:
+            return self._chain_transcripts[chain_id]
+        return self._seq_transcript.get(source_key)
 
     def _stash_last_transcript(self) -> None:
         if not (self._attempt_meta and self._last_messages):
@@ -740,10 +799,7 @@ class TaxonomyEngine:
         while (not self.generation_stop_reason and not self.seed_only
                and self._seed_para_try < self.seed_paraphrase_reps):
             seed_tmpl = self._attempt_meta[0]["template"]
-            sig = self._judge_text(
-                self._seq_transcript.get("SEED") if self._seed_para_try == 0 else self._last_failed_transcript(),
-                injection_goal,
-            )
+            sig = self._judge_text(self._chain_transcript("PARA:SEED", "SEED"), injection_goal)
             if sig and (not self._seed_para_signals or sig != self._seed_para_signals[-1]):
                 self._seed_para_signals.append(sig)
             self._seed_para_try += 1
@@ -787,10 +843,7 @@ class TaxonomyEngine:
                 self._cur_seq_signals = []
                 continue
             src = self._para_sources[self._para_src_idx]
-            sig = self._judge_text(
-                self._seq_transcript.get(src["src"]) if self._para_try == 0 else self._last_failed_transcript(),
-                injection_goal,
-            )
+            sig = self._judge_text(self._chain_transcript(f"PARA:{src['src']}", src["src"]), injection_goal)
             if sig and (not self._cur_seq_signals or sig != self._cur_seq_signals[-1]):
                 self._cur_seq_signals.append(sig)
             self._para_try += 1
@@ -826,10 +879,12 @@ class TaxonomyEngine:
         final_security: bool,
         *,
         stop_at_first_success: bool = True,
+        max_attempts: int | None = None,
     ) -> None:
         """Write the per-pair trace. ``final_security`` is whether the pair was broken at
         all. ``stop_at_first_success`` records the driver's stop rule: when False, the pair
-        ran its whole schedule and the log may hold several successes."""
+        ran its whole schedule and the log may hold several successes. ``max_attempts`` is the
+        driver's cap on target calls (``--max-attempts``), when one was set."""
         if logdir is None:
             return
         logdir = Path(logdir)
@@ -876,10 +931,13 @@ class TaxonomyEngine:
             "newtask_aware": self.newtask_aware,
             "max_attempts": self.max_attempts,
             "attempt_budget": self.attempt_budget,
+            "max_attempts_cap": max_attempts,
+            "effective_budget": min(max_attempts, self.attempt_budget) if max_attempts else self.attempt_budget,
             "total_attempts": self._attempts_recorded(),
             "total_candidates": len(self._attempt_meta),
             "generation_stop_reason": self.generation_stop_reason,
             "generator_limits": {"max_consecutive_refiner_errors": self.max_consecutive_refiner_errors,
+                                 "max_consecutive_refiner_400": self.max_consecutive_refiner_400,
                                  "max_consecutive_unusable": self.max_consecutive_unusable},
             "strategy": getattr(self, "strategy_config", None),
             "injection_succeeded": final_security,
