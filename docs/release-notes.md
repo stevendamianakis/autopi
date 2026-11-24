@@ -1,5 +1,21 @@
 # Release notes
 
+## Version 0.4.1
+
+The bundled IPI Arena moves to its release v0.1.0 (upstream `41d40b29`), its latest
+version; the bundled AgentDojo is already its latest code, upstream `main` at `089ed468`.
+IPI Arena v0.1.0 changes only packaging: the scenario data ships inside the wheel (the
+same data-folder lookup AutoPI's copy already had), the browser install command is quoted,
+and the package metadata names its authors and links. No scenario, judge, simulator or
+scoring file changed, and AutoPI's own code, prompts and options are unchanged. The run
+manifest fingerprints the benchmark code, so a run started with 0.4.0 cannot be resumed
+with 0.4.1.
+
+| Area | Change |
+|---|---|
+| IPI Arena | Updated from upstream `5e2e285` to v0.1.0. AutoPI's other changes to it are kept and listed in THIRD_PARTY.md; its own data-folder patch is now upstream code |
+| Provenance | THIRD_PARTY.md records both upstream revisions and that each is the latest upstream version |
+
 ## Version 0.4.0
 
 The command-line options use the paper's terms. Their earlier names still work, without being

@@ -5,8 +5,8 @@ benchmarks. It contains no nested Git repositories or Git submodules.
 
 | Component | Source | Upstream revision | License |
 |---|---|---|---|
-| AgentDojo | https://github.com/ethz-spylab/agentdojo | `089ed468cf3ed0322acc66b0211f26d9d90dbf60` | [MIT](benchmarks/agentdojo/LICENSE), Edoardo Debenedetti, Jie Zhang, Mislav Balunovic, Luca Beurer-Kellner, Marc Fischer, and Florian Tramèr |
-| IPI Arena | https://github.com/GraySwanAI/ipi_arena_os | `5e2e285910d581c97767195f1d113ef323f9ab07` | [MIT](benchmarks/ipi_arena/LICENSE), Gray Swan AI |
+| AgentDojo | https://github.com/ethz-spylab/agentdojo | `089ed468cf3ed0322acc66b0211f26d9d90dbf60`, upstream `main` (newer than its latest release, v0.1.35, whose version number it still carries) | [MIT](benchmarks/agentdojo/LICENSE), Edoardo Debenedetti, Jie Zhang, Mislav Balunovic, Luca Beurer-Kellner, Marc Fischer, and Florian Tramèr |
+| IPI Arena | https://github.com/GraySwanAI/ipi_arena_os | `41d40b29f6bd99c7721c2ebe6cea9e634495a929`, release v0.1.0 (upstream `main`) | [MIT](benchmarks/ipi_arena/LICENSE), Gray Swan AI |
 | PIAtlas taxonomy | PIAtlas, arXiv:2610.24999 | Paper taxonomy used by AutoPI | Distributed as part of the AutoPI research code |
 
 Portions of AutoPI are derived from AgentDojo, so the root [LICENSE](LICENSE) also
@@ -33,10 +33,10 @@ Changes relative to the bundled upstream revisions:
   `redacted_thinking` block instead of raising, so a thinking target that returns
   one does not crash on the following turn. Scoring is unchanged.
 - IPI Arena `behavior.py`: insert an empty tool result for unanswered
-  prefilled tool calls and detect the actual image MIME type. Its data loader also locates scenario data inside installed wheels.
-- IPI Arena packaging: include scenario data in wheels and declare the optional
-  Hugging Face dataset dependency. A conversion regression test was updated to
-  expect the required tool-result message.
+  prefilled tool calls and detect the actual image MIME type.
+- IPI Arena packaging: declare the optional Hugging Face dataset dependency. A
+  conversion regression test was updated to expect the required tool-result
+  message.
 
 ## Known issues in the bundled benchmarks
 
