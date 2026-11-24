@@ -302,8 +302,10 @@ default tool calling of the short `vllm:` and `ollama:` target specs from prompt
 `--tool-calling prompted` for the earlier behavior. AgentDojo's own runner counts an attempt that
 ends in a context overflow or a provider's server error as a successful attack; AutoPI leaves such an
 attempt unmeasured (see the [strategy guide](docs/strategies.md)), so compare with results from that
-runner with this in mind. The repository holds no model weights, credentials, server addresses or
-experiment outputs.
+runner with this in mind. AutoPI keeps the bundled benchmarks' own scoring unchanged, including the known
+issues listed in [THIRD_PARTY.md](THIRD_PARTY.md#known-issues-in-the-bundled-benchmarks), so results stay
+comparable with other work on them. The repository holds no model weights, credentials, server
+addresses or experiment outputs.
 
 ## Run-to-run variation
 

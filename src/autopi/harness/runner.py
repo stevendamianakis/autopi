@@ -135,6 +135,55 @@ class RunSummary:
         return "\n".join(lines)
 
 
+def scenario_log_path(logdir: Path, point: AttackPoint) -> Path:
+    """Where a scenario's log is written, and where --resume looks for it."""
+    return Path(logdir) / "refiner_logs" / point.suite / f"{point.user_task_id}__{point.injection_task_id}.json"
+
+
+def pending_points(points: list[AttackPoint], logdir, resume: bool) -> list[AttackPoint]:
+    """The points a run will attack: all of them, or with --resume the ones without a log."""
+    if not resume or logdir is None:
+        return list(points)
+    return [point for point in points if not scenario_log_path(logdir, point).exists()]
+
+
+def check_adapter_points(adapter, points: list[AttackPoint]) -> None:
+    """Let an adapter refuse, at setup, scenarios it cannot run here (an optional ``check_points``
+    method; IPI Arena's browser scenarios need playwright and its Chromium)."""
+    check = getattr(adapter, "check_points", None)
+    if check is not None and points:
+        check(points)
+
+
+def _whole_number(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _unusable_scenario_log(log) -> str | None:
+    """Why ``--resume`` cannot reuse a scenario log, or None when it can. Every finished scenario's
+    log holds these fields with these types, so a log without them (edited by hand, or not
+    written by AutoPI) is not taken for a result."""
+    if not isinstance(log, dict):
+        return "not a JSON object"
+    succeeded, attempts = log.get("injection_succeeded"), log.get("total_attempts")
+    if not isinstance(succeeded, bool):
+        return "injection_succeeded is not true or false"
+    if not _whole_number(attempts) or attempts < 0:
+        return "total_attempts is not a whole number"
+    first = log.get("first_success_attempt")
+    if succeeded and not (_whole_number(first) and 1 <= first <= attempts):
+        return "a success without a valid first_success_attempt"
+    if not succeeded and first is not None:
+        return "a first_success_attempt on a scenario that did not succeed"
+    successes = log.get("num_successes", 1 if succeeded else 0)
+    if not _whole_number(successes) or not (1 if succeeded else 0) <= successes <= max(attempts, 0):
+        return "num_successes does not match the result"
+    for key in ("solved_sources", "infra_failures"):
+        if key in log and not isinstance(log[key], list):
+            return f"{key} is not a list"
+    return None
+
+
 def _save_criteria_log(logdir: Path, point: AttackPoint, infos: list, succeeded: bool) -> None:
     # Side-log per-attempt criterion detail for adapters that expose it (IPI Arena: full
     # is_break vs concealment-excluded action_only). A full-criteria run thus also gives the
@@ -198,6 +247,9 @@ def run_attack(
     summary = RunSummary(benchmark=adapter.name, awareness_mode=engine.awareness_mode,
                          stop_at_first_success=stop_at_first_success)
     pts = list(points) if points is not None else list(adapter.iter_points())
+    # The adapter may refuse, before any request, scenarios it cannot run here (IPI Arena's browser
+    # scenarios without playwright); only the ones this run will attack are checked.
+    check_adapter_points(adapter, pending_points(pts, logdir, resume))
     consecutive_infra = 0
     consecutive_endpoint_attempts = 0
     # Scenarios lost entirely to infrastructure errors are listed in this file. --resume runs them
@@ -229,23 +281,25 @@ def run_attack(
         if journal:
             journal.context = {"suite": point.suite, "user_task": point.user_task_id,
                                "injection_task": point.injection_task_id}
-        log_file = (
-            logdir / "refiner_logs" / point.suite / f"{point.user_task_id}__{point.injection_task_id}.json"
-            if logdir is not None else None
-        )
+        log_file = scenario_log_path(logdir, point) if logdir is not None else None
         if resume and log_file is not None and log_file.exists():
             try:
                 prev = json.loads(log_file.read_text())
-                done_ok, done_att = bool(prev.get("injection_succeeded")), int(prev.get("total_attempts", 0) or 0)
-            except (ValueError, TypeError, OSError) as exc:
+            except (ValueError, OSError) as exc:
                 raise CorruptScenarioLogError(
                     f"cannot resume: the scenario log {log_file} cannot be read; delete it to run that "
                     "scenario again") from exc
+            problem = _unusable_scenario_log(prev)
+            if problem:
+                raise CorruptScenarioLogError(
+                    f"cannot resume: the scenario log {log_file} is incomplete or malformed ({problem}); "
+                    "delete it to run that scenario again")
+            done_ok, done_att = prev["injection_succeeded"], prev["total_attempts"]
             summary.outcomes.append(PointOutcome(
                 point=point, succeeded=done_ok, attempts=done_att,
                 solved_sequence_id=prev.get("solved_sequence_id"), solved_phase=prev.get("solved_phase"),
                 first_success_attempt=prev.get("first_success_attempt"),
-                successful_attempts=int(prev.get("num_successes", 1 if done_ok else 0) or 0),
+                successful_attempts=prev.get("num_successes", 1 if done_ok else 0),
                 solved_sources=list(prev.get("solved_sources") or []),
                 generation_stop_reason=prev.get("generation_stop_reason"),
                 infrastructure_failures=len(prev.get("infra_failures") or []),

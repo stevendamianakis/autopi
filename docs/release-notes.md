@@ -1,5 +1,20 @@
 # Release notes
 
+## Version 0.3.3
+
+A small fix release. No bundled benchmark file changed, and AgentDojo's and IPI
+Arena's own execution, injection and scoring are unchanged. The generator and judge
+prompts are unchanged. The run manifest fingerprints AutoPI's code, so a run started
+with 0.3.2 cannot be resumed with 0.3.3.
+
+| Area | Change |
+|---|---|
+| Resumed logs | `--resume` reuses a scenario log only when it holds a complete, consistent result (`injection_succeeded` true or false, `total_attempts` a whole number, a success with its first successful attempt); otherwise it stops and asks to delete the log, as for an unreadable one. Before, any JSON was reused: `{}` counted as a failed scenario with no attempt, and the text `"false"` as a success |
+| IPI Arena browser scenarios | The playwright and Chromium check runs on the scenarios a run attacks, after `--limit`, `--shard` and `--resume`, instead of on every scenario the adapter selected, so a selection without browser scenarios needs neither. Python callers get the same check from `run_attack`; an adapter may implement the optional `check_points` method |
+| Output folder of another run | The trace folder is created with the first trace event. 0.3.2 refused such a folder before any request but could still create an empty `traces/` folder in it; a refused run now leaves the folder unchanged. A trace location that cannot be written is still reported at setup, and a trace that cannot be written during the generator check is reported as that, not as a generator error |
+| Known benchmark issues | THIRD_PARTY.md lists the issues found in the bundled AgentDojo and IPI Arena scoring, for example AgentDojo's banking checks that count any transfer to the attacker as a success. They are kept unchanged, as upstream, so results stay comparable with other work |
+| Tests | Regression tests for each change, each checked to fail when its fix is reverted |
+
 ## Version 0.3.2
 
 A review-driven fix release. No bundled benchmark file changed, and AgentDojo's and

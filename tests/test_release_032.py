@@ -440,8 +440,9 @@ def test_ipi_arena_browser_scenarios_need_chromium_as_well(monkeypatch, tmp_path
     assert I._chromium_installed() is True
     pytest.importorskip("ipi_arena_bench")
     monkeypatch.setattr(I, "_chromium_installed", lambda: False)
+    adapter = I.IPIArenaAdapter("vllm:8000:m", behaviors=["browser-gmail-forward-injection"], verbose=False)
     with pytest.raises(ValueError, match="Chromium"):
-        I.IPIArenaAdapter("vllm:8000:m", behaviors=["browser-gmail-forward-injection"], verbose=False)
+        adapter.check_points(list(adapter.iter_points()))      # since 0.3.3, on the selected scenarios
 
 
 def test_ipi_arena_rejected_credentials_stop_the_run():

@@ -243,8 +243,11 @@ reasoning removed.
 
 `--logdir` writes a run manifest with resolved model settings, package versions,
 source hashes, taxonomy and tokenizer hashes, seed hash and strategy. It refuses
-to mix a different configuration/code/tokenizer into the same output folder.
-`--resume` skips completed scenarios; it does not resume a half-finished scenario.
+to mix a different configuration/code/tokenizer into the same output folder, before
+any request and without creating anything in it (the trace folder is created with the
+first trace event). `--resume` skips completed scenarios whose log holds a complete
+result, and stops at a log that does not; it does not resume a half-finished
+scenario.
 `--num-shards N --shard I` distributes scenarios among workers. Workers may share
 one output directory when their experiment settings match.
 

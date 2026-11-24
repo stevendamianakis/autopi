@@ -50,7 +50,13 @@ def plain(value):
 class Journal:
     def __init__(self, root: str | Path, extra_secret_envs=None):
         root = Path(root)
-        root.mkdir(parents=True, exist_ok=True)
+        # The folder is created with the first event, so that a run refused at setup (its output
+        # folder holds another run, say) creates nothing. A location that cannot be written is
+        # still reported now: the nearest folder that exists must be writable.
+        existing = next((folder for folder in (root, *root.parents) if folder.exists()), None)
+        if existing is None or not existing.is_dir() or not os.access(existing, os.W_OK | os.X_OK):
+            raise OSError(f"cannot write traces under {root}: {existing or root} is not a writable folder")
+        self.root = root
         self.path = root / f"events-{uuid.uuid4().hex}.jsonl"
         self.context = {}
         # Environment variables whose value must be scrubbed from every event, in addition to
@@ -67,6 +73,7 @@ class Journal:
                                     or re.search(r"API_KEY|TOKEN|SECRET|PASSWORD", key)):
                 text = text.replace(value, "<redacted>")
         try:
+            self.root.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as stream:
                 stream.write(text)

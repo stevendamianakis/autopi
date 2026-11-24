@@ -67,10 +67,14 @@ def _check_generator(engine) -> None:
     """Send the generator one short request through the engine's own request path, with the
     run's settings. Raise a ClickException when it fails, unless the provider refused the text on
     content-policy grounds (the settings were accepted)."""
+    from autopi.harness.journal import TraceWriteError
     from autopi.models.clients import is_content_policy_rejection
 
     try:
         engine._query("Reply with the single word OK.")
+    except TraceWriteError as exc:
+        # The trace could not be written; that says nothing about the generator.
+        raise click.ClickException(str(exc)) from exc
     except Exception as exc:
         if is_content_policy_rejection(exc):
             return
@@ -197,7 +201,12 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     from autopi.core.strategy import StrategyEngine, load_strategy
     from autopi.harness.journal import Journal
     from autopi.harness.manifest import benchmark_data_digest, check_run_manifest, save_run_manifest
-    from autopi.harness.runner import CorruptScenarioLogError, TargetUnavailableError
+    from autopi.harness.runner import (
+        CorruptScenarioLogError,
+        TargetUnavailableError,
+        check_adapter_points,
+        pending_points,
+    )
     from autopi.models.endpoints import load_model_catalog, override_endpoint, resolve_endpoint
 
     if num_shards < 1 or not 0 <= shard < num_shards:
@@ -323,6 +332,9 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
             points = points[:limit]
         if not points:
             raise ValueError("no scenarios match the selection/shard; check the suite and task ids")
+        # The adapter's setup requirements for the scenarios this run will attack, after --limit,
+        # --shard and --resume (IPI Arena: a browser scenario needs playwright and its Chromium).
+        check_adapter_points(adapter, pending_points(points, logdir, resume))
         click.echo(f"[autopi] benchmark={benchmark} mode={mode} target={target} refiner={refiner} "
                    f"combos={engine.num_combos} budget/pt={min(max_attempts or engine.attempt_budget, engine.attempt_budget)} "
                    f"points={len(points)} target_thinking={target_thinking} "

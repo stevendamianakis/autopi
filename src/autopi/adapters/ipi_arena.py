@@ -317,22 +317,30 @@ class IPIArenaAdapter:
         if self._categories and not any(b.get("category", "") in self._categories for b in self._behaviors.values()):
             raise ValueError(f"none of the selected IPI Arena scenarios is in the selected categories "
                              f"{sorted(self._categories)}")
-        # As IPI Arena's own BenchmarkRunner.run(): a selected browser scenario needs playwright, and
-        # IPI Arena's screenshot step launches playwright's Chromium, which the package alone (without
-        # `playwright install chromium`) does not include. Stop at setup (a dry run included) rather
-        # than fail every attempt of those scenarios in the infrastructure.
-        browser = sorted(bid for bid, b in self._behaviors.items() if b.get("html_template")
-                         and (not self._categories or b.get("category", "") in self._categories))
-        if browser:
-            hint = (f"({len(browser)} selected, e.g. {browser[0]}). Install them with: pip install -e "
-                    "'benchmarks/ipi_arena[browser]' && python -m playwright install chromium, or leave the "
-                    "browser scenarios out with --suite tool --suite coding")
-            try:
-                import playwright  # noqa: F401
-            except ImportError:
-                raise ValueError(f"IPI Arena browser scenarios need playwright, which is not installed {hint}") from None
-            if not _chromium_installed():
-                raise ValueError(f"IPI Arena browser scenarios need playwright's Chromium, which is not installed {hint}")
+        self._browser_ready = False
+
+    def check_points(self, points) -> None:
+        """Raise ValueError when a scenario about to run needs something that is not installed. As
+        IPI Arena's own BenchmarkRunner.run() does, a browser scenario needs playwright, and IPI
+        Arena's screenshot step also launches playwright's Chromium, which the package alone
+        (without `playwright install chromium`) does not include. The CLI calls this on the
+        scenarios it selected (after --limit and --shard, a dry run included) and ``run_attack``
+        on the ones it is given, so a run stops at setup rather than fail every attempt of those
+        scenarios in the infrastructure, and a selection without browser scenarios needs neither."""
+        browser = sorted({point.user_task_id for point in points
+                          if self._behaviors.get(point.user_task_id, {}).get("html_template")})
+        if not browser or self._browser_ready:
+            return
+        hint = (f"({len(browser)} selected, e.g. {browser[0]}). Install them with: pip install -e "
+                "'benchmarks/ipi_arena[browser]' && python -m playwright install chromium, or leave the "
+                "browser scenarios out with --suite tool --suite coding")
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            raise ValueError(f"IPI Arena browser scenarios need playwright, which is not installed {hint}") from None
+        if not _chromium_installed():
+            raise ValueError(f"IPI Arena browser scenarios need playwright's Chromium, which is not installed {hint}")
+        self._browser_ready = True
 
     def iter_points(self) -> Iterator[AttackPoint]:
         for bid, behavior in self._behaviors.items():

@@ -7,6 +7,11 @@ The search engine imports no benchmark package. A benchmark adapter supplies:
 2. `run(point, injection_text)` placing the text, executing the agent and returning
    `RunResult(utility, security, messages, info)`.
 3. A `name`, informational `checker_kind`, and optionally a default seed template/name.
+4. Optionally, `check_points(points)`, which raises `ValueError` when a scenario about
+   to run needs something that is missing. The CLI calls it on the scenarios it
+   selected, after `--limit`, `--shard` and `--resume`, and `run_attack` on the
+   scenarios it is given, so the run stops at setup (IPI Arena's browser scenarios
+   need playwright and its Chromium).
 
 `security=True` means the **attacker's goal succeeded**. It does not mean the
 agent was secure. `messages` uses dictionaries with `role`, `content` and

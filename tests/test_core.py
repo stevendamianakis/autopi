@@ -1275,8 +1275,12 @@ def test_ipi_arena_stops_at_setup_when_a_selected_browser_scenario_lacks_playwri
     from autopi.adapters import ipi_arena as I
 
     monkeypatch.setitem(sys.modules, "playwright", None)           # "import playwright" now fails
+    # Since 0.3.3 the check runs on the scenarios a run attacks (check_points), not when the adapter
+    # is built, so that --limit and --shard selections without browser scenarios need no playwright.
     for selection in ({"behaviors": ["browser-gmail-forward-injection"]}, {}):   # one browser scenario, or all 41
+        adapter = I.IPIArenaAdapter("vllm:8000:m", verbose=False, **selection)
         with pytest.raises(ValueError, match="playwright"):
-            I.IPIArenaAdapter("vllm:8000:m", verbose=False, **selection)
-    I.IPIArenaAdapter("vllm:8000:m", behaviors=["book-hotel"], verbose=False)          # no browser scenario
-    I.IPIArenaAdapter("vllm:8000:m", categories=["tool", "coding"], verbose=False)     # browser ones left out
+            adapter.check_points(list(adapter.iter_points()))
+    for selection in ({"behaviors": ["book-hotel"]}, {"categories": ["tool", "coding"]}):    # no browser scenario
+        adapter = I.IPIArenaAdapter("vllm:8000:m", verbose=False, **selection)
+        adapter.check_points(list(adapter.iter_points()))
