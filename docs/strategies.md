@@ -144,6 +144,6 @@ Seed selection, model settings, awareness mode, mechanism switches, taxonomy
 path, task selection, sharding and output options apply to either interface.
 
 The included L1, Full and Seed-Exploit files match the paper's intended budgets;
-`repeated-phases.yaml` is a composition example (repeated and reordered blocks).
+`repeated-phases.yaml` is an example of repeated and reordered blocks.
 Use `--max-attempts 350` with Seed-Exploit for its IPI equal-cost budget. A changed
 taxonomy may contain a different number of units; adjust the budget accordingly.

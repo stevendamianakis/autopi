@@ -20,9 +20,9 @@
 </p>
 
 AutoPI is an adaptive red teamer for tool-using LLM agents. It is built to find many different ways to
-break an agent, not just to break it often. For each scenario, an attacker LLM writes an indirect prompt
-injection for every sub-technique of a prompt-injection taxonomy, then reworks the ones that fail using
-feedback from an LLM judge.
+break an agent, not just to break it often. For each scenario, an attacker LLM (the generator) writes an
+indirect prompt injection for every sub-technique of a prompt-injection taxonomy, then reworks the ones
+that fail using feedback from an LLM judge.
 
 <p align="center">
   <img src="assets/architecture.png" width="100%" alt="The AutoPI architecture. The engine holds three phases: Initialize with an optional fixed seed, Explore by sweeping a taxonomy, and Exploit by refining failed injections. It sends a prompt to the generator LLM, which writes one injection. The adapter places the injection and runs the target agent once in the benchmark's environment, whose checker reports the outcome. The transcript of a failed attempt goes to the judge LLM, whose diagnosis returns to the engine.">
@@ -160,14 +160,14 @@ without a seed block.
 
 A strategy is an ordered list of blocks, an attempt budget per scenario and a stop rule.
 `configs/strategies/` holds the paper's AutoPI-Full, AutoPI-Seed-Exploit and AutoPI-L1, plus
-`repeated-phases.yaml` as a composition example. They are examples, not limits:
+`repeated-phases.yaml` as an example of repeated and reordered blocks. They are examples, not limits:
 
 | File | Blocks | Attempts | Goal |
 |---|---|---:|---|
 | `full.yaml` | seed, L1 sweep, 3 variants of each failed sweep line | 529 | coverage |
 | `seed-exploit.yaml` | seed, 600 rewrites of the seed | 601 | ASR with a strong seed |
 | `l1.yaml` | seed, L1 sweep | 133 | low cost |
-| `repeated-phases.yaml` | seed and sweep blocks, repeated and reordered | ≤75 (budget 80) | illustration |
+| `repeated-phases.yaml` | all four block kinds, with an L1 and an L2 sweep, repeated and reordered | ≤75 (budget 80) | illustration |
 
 ```yaml
 # configs/strategies/full.yaml
@@ -286,7 +286,7 @@ the paper, use the settings it lists instead.
 - With thinking on, the reasoning counts toward the output cap, so a cap can cut an answer short; the
   generator's default 1,024-token cap can be too small for a hosted reasoning model.
 - A self-hosted **native** target that thinks should be served with a reasoning parser (for example vLLM
-  `--reasoning-parser`), so its reasoning is not scored and does not reach the attacker's judge.
+  `--reasoning-parser`), so its reasoning is not scored and does not reach AutoPI's judge.
 - Model cards often recommend sampling instead of greedy decoding. Qwen3.6's suggests temperature
   1.0 with thinking on, and Qwen3's advises against greedy decoding there. Google advises keeping
   Gemini 3 at its default sampling, and its newer models ignore a custom temperature, so AgentDojo's
