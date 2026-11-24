@@ -1,5 +1,24 @@
 # Release notes
 
+## Version 0.5.0
+
+AutoPI's judge, which diagnoses why an attempt failed, can run on a model of its own,
+and the options, messages and run records keep it apart from IPI Arena's scoring judge.
+By default the judge still runs on the generator's endpoint, as in the paper, so a run
+without the new option sends the same requests as before. No bundled benchmark file
+changed, and AgentDojo's and IPI Arena's own execution, injection and scoring are
+unchanged. The generator and judge prompts are unchanged. The run manifest fingerprints
+AutoPI's code, so a run started with 0.4.1 cannot be resumed with 0.5.0.
+
+| Area | Change |
+|---|---|
+| AutoPI's judge | `--autopi-judge` names the model of AutoPI's judge (mechanism ①), as a model alias or spec like `--generator`, which stays the default. A judge of its own takes its alias's settings, with the generator's 1,024-token default cap, and its alias's `tokenizer_path`; `--generator-tokenizer` covers the judge only while it runs on the generator. It gets a test request before the first scenario. `--autopi-judge` is refused with `--no-judge` or `TAX_JUDGE=0`, and a schedule without seed or sweep exploits, which never calls the judge, prints a note. In Python, `judge_config=RefinerConfig(endpoint=...)` on `TaxonomyEngine` or `StrategyEngine` |
+| Two judges kept apart | The help of `--autopi-judge`, `--ipi-judge`, `--generator` and `--no-judge` says which judge each concerns. The first line of a run prints `autopi_judge=` (the model, or `off`) and, on IPI Arena, `ipi_judge=`. `--judge`, the earlier name of `--ipi-judge`, prints a note that it sets IPI Arena's scoring judge, and on AgentDojo its error points to `--autopi-judge`. A new section of the model guide, [which model does what](models.md#which-model-does-what), lists every model a run uses |
+| Run manifest | `models.diagnostic_judge` records AutoPI's judge (null when it is off). On AgentDojo, which has no LLM judge, `models.judge` and `models.worldsim` are null; before, they recorded the target |
+| Messages | An error of AutoPI's judge on its own endpoint names `AutoPI's judge (--autopi-judge)`, and one on the generator's endpoint names the generator as AutoPI's judge (before: `the diagnostic_judge`, or `the generator`). A failed judge request prints `AutoPI judge error` |
+| README | The quick start warns that frontier models refuse to write injections in the generator role and recommends an open-weight generator |
+| Tests | Regression tests for each change, each checked to fail when its change is reverted |
+
 ## Version 0.4.1
 
 The bundled IPI Arena moves to its release v0.1.0 (upstream `41d40b29`), its latest

@@ -85,7 +85,7 @@ run before the scenario is logged, so `--resume` repeats it. This includes TLS/S
 and proxy failures. A missing, unreadable or invalid tokenizer is a setup error, and
 so is a rejected key, account or model id (HTTP 401, 402, 403 other than a
 moderation block, 404, or an invalid API key). Three consecutive unexpected request
-errors from the generator or the judge also stop the run before logging the
+errors from the generator or AutoPI's judge also stop the run before logging the
 current scenario. Any other HTTP 400 is a per-prompt rejection and stays a skippable
 candidate, but **25 consecutive HTTP 400s** from a role stop the run, since a
 generator that rejects every request would otherwise turn it into seed-only results.

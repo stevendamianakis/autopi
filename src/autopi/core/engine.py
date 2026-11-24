@@ -91,7 +91,7 @@ _INITIAL_TEMPLATE = IMPORTANT_INSTRUCTIONS_SEED  # backward-compatible module de
 
 
 class GeneratorUnavailableError(RuntimeError):
-    """The generator or the judge is unavailable, misconfigured or repeatedly errors.
+    """The generator or AutoPI's judge is unavailable, misconfigured or repeatedly errors.
     The run stops before the scenario is logged, so ``--resume`` repeats it."""
 
     fatal = True
@@ -151,6 +151,11 @@ class TaxonomyEngine:
     new-task-aware mode 3 (writes the goal directly, no placeholder). The default is mode 3,
     the paper's setting and the command line's, with no exploit variants (``paraphrase_reps``
     0), so the default schedule is the seed and the L1 sweep, as ``l1.yaml``.
+
+    AutoPI's judge, which diagnoses why an attempt failed, runs on the generator's model and
+    settings (``refiner_config``), as in the paper, unless ``judge_config`` gives it its own
+    endpoint. It plays no part in scoring: a benchmark's own judge, such as IPI Arena's scoring
+    judge, belongs to the benchmark's adapter.
     """
 
     name = "taxonomy_refined"
@@ -179,6 +184,7 @@ class TaxonomyEngine:
         usertask_aware: bool | None = None,
         awareness_mode: int | None = None,
         refiner_config: RefinerConfig | None = None,
+        judge_config: RefinerConfig | None = None,
         use_seed: bool | None = None,
         sweep_before_seed_para: bool | None = None,
         order: str | None = None,
@@ -193,7 +199,18 @@ class TaxonomyEngine:
     ) -> None:
         if not refiner_model:
             raise ValueError("refiner_model must be explicitly configured")
+        if judge_config is not None and judge_config.endpoint is None:
+            # Without an endpoint the config would resolve the generator's legacy route
+            # (VLLM_REFINER_PORT and the like), so the judge would quietly stay on the generator.
+            raise ValueError("judge_config needs an explicit endpoint: "
+                             "RefinerConfig(endpoint=ModelEndpoint(...)), or None to use the generator's")
         self._refiner_config = refiner_config
+        if (judge_config is not None and judge_config.journal is None
+                and refiner_config is not None and refiner_config.journal is not None):
+            # The trace records every model request, the judge's included.
+            judge_config = replace(judge_config, journal=refiner_config.journal)
+        # AutoPI's judge: None runs it on the generator's model and settings, as in the paper.
+        self._judge_config = judge_config
         self.max_consecutive_refiner_errors = int(
             max_consecutive_refiner_errors if max_consecutive_refiner_errors is not None
             else os.environ.get("TAX_MAX_CONSECUTIVE_REFINER_ERRORS", "3"))
@@ -394,18 +411,28 @@ class TaxonomyEngine:
     def num_combos(self) -> int:
         return self._combos.size if hasattr(self._combos, "size") else len(self._combos)
 
+    @property
+    def calls_judge(self) -> bool:
+        """Whether the schedule can call AutoPI's judge: the judge is on and the schedule has seed
+        or sweep exploits, the only attempts whose prompt carries the judge's diagnosis."""
+        return self.use_judge and (self.paraphrase_reps > 0 or self.seed_paraphrase_reps > 0)
+
     def _query(self, prompt: str) -> str:
         from autopi.models.clients import strip_leading_reasoning
 
-        config = self._refiner_config
+        config, model = self._refiner_config, self.refiner_model
         if getattr(self, "_querying_judge", False):
+            # AutoPI's judge runs on its own endpoint when it has one, else on the generator's.
+            # The role labels its requests in traces and keeps its error streaks apart.
+            if self._judge_config is not None:
+                config, model = self._judge_config, self._judge_config.endpoint.model
             config = replace(config, role="diagnostic_judge") if config else RefinerConfig(role="diagnostic_judge")
         # A self-hosted generator or judge that thinks without a server-side reasoning parser opens
         # its reply with reasoning. Remove it, so a draft line or a FAILURE_MODE written inside the
         # reasoning is not parsed as the answer. A thinking-off or hosted endpoint returns no
         # reasoning in its reply, which is then used as written; the visible line, delimiters and
         # any structural tokens it contains are kept either way.
-        reply = query_refiner_llm(self.refiner_model, prompt, config)
+        reply = query_refiner_llm(model, prompt, config)
         endpoint = getattr(config, "endpoint", None)
         return strip_leading_reasoning(reply) if getattr(endpoint, "may_leak_reasoning", True) else reply
 
@@ -564,19 +591,27 @@ class TaxonomyEngine:
         return "".join(parts)
 
     def _check_refiner_error(self, e: Exception) -> None:
-        """Stop on a generator that cannot be reached or is misconfigured, in a strict run, or
-        on a fatal error. Bound consecutive unexpected request failures separately by role."""
+        """Stop on a generator (or AutoPI's judge) that cannot be reached or is misconfigured, in a
+        strict run, or on a fatal error. Bound consecutive unexpected request failures separately
+        by role."""
+        role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
+        # Messages name the model to fix: AutoPI's judge only when it has an endpoint of its own.
+        if role == "refiner":
+            who = "the generator"
+        elif self._judge_config is not None:
+            who = "AutoPI's judge (--autopi-judge)"
+        else:
+            who = "the generator, as AutoPI's judge,"
         if _generator_unreachable(e):
             raise GeneratorUnavailableError(
-                f"the generator could not be reached ({type(e).__name__}: {str(e)[:160]}). The run "
+                f"{who} could not be reached ({type(e).__name__}: {str(e)[:160]}). The run "
                 "stopped before this scenario was logged; rerun the same command with --resume to continue") from e
         if _generator_misconfigured(e):
             raise GeneratorUnavailableError(
-                f"the generator is misconfigured ({type(e).__name__}: {str(e)[:160]}). Fix the model, key "
+                f"{who} is misconfigured ({type(e).__name__}: {str(e)[:160]}). Fix the model, key "
                 "or SDK (it would fail the same way on every scenario), then rerun with --resume to continue") from e
         if self.strict_refiner or getattr(e, "fatal", False):
             raise RuntimeError("Taxonomy generator/judge request failed") from e
-        role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
         from autopi.models.clients import is_content_policy_rejection
 
         if is_content_policy_rejection(e):
@@ -593,14 +628,14 @@ class TaxonomyEngine:
             self._refiner_400_streaks[role] += 1
             if self._refiner_400_streaks[role] >= self.max_consecutive_refiner_400:
                 raise GeneratorUnavailableError(
-                    f"the {role} rejected {self._refiner_400_streaks[role]} requests in a row with HTTP 400 "
+                    f"{who} rejected {self._refiner_400_streaks[role]} requests in a row with HTTP 400 "
                     f"({str(e)[:160]}). Check the endpoint's settings (for example temperature or max_tokens, "
                     "which some models reject), then rerun with --resume to continue") from e
             return
         self._refiner_error_streaks[role] += 1
         if self._refiner_error_streaks[role] >= self.max_consecutive_refiner_errors:
             raise GeneratorUnavailableError(
-                f"the {role} failed with {self._refiner_error_streaks[role]} consecutive unexpected errors "
+                f"{who} failed with {self._refiner_error_streaks[role]} consecutive unexpected errors "
                 f"({type(e).__name__}: {str(e)[:160]}). The run stopped before this scenario was logged; "
                 "fix the endpoint or client, then rerun with --resume to continue") from e
 
@@ -619,7 +654,7 @@ class TaxonomyEngine:
             mode, reason, _guidance = _parse_judge(resp)
             self._refiner_request_succeeded()
         except Exception as e:
-            print(f"[autopi] judge error: {e}")
+            print(f"[autopi] AutoPI judge error: {e}")
             self._check_refiner_error(e)
             return None
         finally:

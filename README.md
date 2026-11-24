@@ -54,6 +54,14 @@ autopi run --benchmark agentdojo \
   --logdir runs/agentdojo-full
 ```
 
+> [!WARNING]
+> **Use an open-weight model as the generator.** In our experience, frontier models such as Claude
+> Haiku 5.5, GPT-6 Luna and more capable ones refuse to write prompt injections almost every time in
+> the generator role, which makes them impractical there. Open-weight models with less strict
+> cybersecurity safeguards work well, for example Qwen3.8-27B or Qwen3.6-35B, the generator used in the
+> paper. On the contrary, frontier models can be used without any issues as the target, as AutoPI's judge
+> (`--autopi-judge`) or as IPI Arena's scoring judge (`--ipi-judge`).
+
 > [!TIP]
 > Add `--dry-run` to check the settings and count the scenarios without calling a model.
 
@@ -98,7 +106,9 @@ autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
 ```
 
 IPI Arena has 41 scenarios: 18 tool use, 15 coding and 8 browser. A scenario counts as broken only when
-every one of its criteria passes (`--ipi-ignore-concealment` scores the action alone). The benchmark
+every one of its criteria passes (`--ipi-ignore-concealment` scores the action alone). `--ipi-judge` and
+`--ipi-worldsim` pick the models of IPI Arena's scoring judge and tool simulator, which are part of the
+benchmark, not AutoPI's judge (`--autopi-judge`). The benchmark
 ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy without a seed block.
 Browser scenarios need an image-capable target, playwright and its Chromium; without them, leave the
 browser scenarios out with `--suite tool --suite coding`.
@@ -110,7 +120,11 @@ browser scenarios out with `--suite tool --suite coding`.
 <br>
 
 - `--mode 3`, the default and the paper's setting, shows the generator the user task and the injection goal.
-- `--no-judge`, `--no-context` and `--no-legitimize` switch off one of the three adaptive mechanisms.
+- `--autopi-judge` gives AutoPI's judge, which diagnoses failed attempts, a model of its own (by default it
+  runs on the generator). It is not IPI Arena's scoring judge, `--ipi-judge`, which decides whether an attack
+  succeeded ([which model does what](docs/models.md#which-model-does-what)).
+- `--no-judge`, `--no-context` and `--no-legitimize` switch off one of the three adaptive mechanisms
+  (`--no-judge` switches off AutoPI's judge, never IPI Arena's scoring judge).
 - `--seed-file` uses another seed, and `--no-seed` opens with the sweep.
 - `--no-early-stop` keeps going after the first success, for coverage runs.
 - `--tool-calling` and `--injection-placement` set how an AgentDojo target calls tools and where the injection goes.

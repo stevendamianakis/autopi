@@ -102,7 +102,9 @@ def _manifest_record(settings: dict) -> dict:
             continue
     tokenizers = {}
     for role, model in settings["models"].items():
-        path = model.get("tokenizer_path")
+        # A role the run does not use (AutoPI's judge when it is off, IPI Arena's judge on
+        # AgentDojo) is recorded as None.
+        path = (model or {}).get("tokenizer_path")
         if path:
             tokenizers[role] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
     return {"format_version": 1, "settings": settings, "versions": versions, "sources": sources,

@@ -206,6 +206,7 @@ def test_messages_name_the_options_as_given(monkeypatch):
 
 def test_the_run_prints_the_paper_terms(monkeypatch, tmp_path):
     run = _invoke(monkeypatch, ["--sweep-exploits", "1"], logdir=tmp_path)
-    assert run.code == 0 and "generator=vllm:8000:t sweep_lines=6 budget/pt=13 " in run.banner
+    # 0.5.0 added autopi_judge= (here off: _invoke passes --no-judge) after the generator.
+    assert run.code == 0 and "generator=vllm:8000:t autopi_judge=off sweep_lines=6 budget/pt=13 " in run.banner
     assert "[autopi] attempt 2 sweep L1" in run.output
     assert "TAXREFINER" not in run.output and "refiner=" not in run.output and "combos=" not in run.output

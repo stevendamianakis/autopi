@@ -20,6 +20,8 @@ models:
     # A prompted target (tool_mode: prompted) behind a parser that strips its tool text:
     # tokenizer_path: /path/to/exact/served/tokenizer.json
 
+  # AutoPI's judge, which diagnoses failed attempts, runs on this alias too unless
+  # --autopi-judge names another one (with the same fields as this alias).
   generator:
     provider: openai-compatible
     model: YOUR_SERVED_GENERATOR_MODEL_ID
@@ -40,6 +42,8 @@ models:
     max_tokens: 4096
     timeout: 1200
 
+  # IPI Arena's scoring judge (--ipi-judge, and here --ipi-worldsim too), part of the
+  # benchmark's own scoring. It is not AutoPI's judge (--autopi-judge).
   arena-judge:
     provider: openai-compatible
     model: YOUR_SERVED_JUDGE_MODEL_ID

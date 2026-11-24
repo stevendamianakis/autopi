@@ -49,6 +49,13 @@ summary = run_attack(my_adapter, engine, logdir="runs/my-benchmark")
 print(summary.format())
 ```
 
+AutoPI's judge, which diagnoses failed attempts, runs on `refiner_config`'s endpoint,
+as in the paper. To give it a model of its own, pass
+`judge_config=RefinerConfig(endpoint=judge_endpoint)`; a config without an endpoint is
+refused, and one without a journal shares the generator's trace. A benchmark's own
+judge, such as IPI Arena's scoring judge, belongs to that benchmark's adapter, not to
+the engine.
+
 `TaxonomyEngine` and `StrategyEngine` default to awareness mode 3 (the generator
 writes the goal directly), the paper's setting and the command line's default; pass
 `awareness_mode` to change it. A `TaxonomyEngine` makes no exploit variants unless
@@ -60,7 +67,8 @@ The CLI connects the two bundled benchmarks. New adapters can use the same
 Python entry point without changing the engine or importing the taxonomy into
 the adapter. A local server is optional; the generator endpoint can use a hosted
 provider. A custom text generator can subclass `TaxonomyEngine`/`StrategyEngine`
-and implement `_query(prompt)`; it receives no benchmark objects.
+and implement `_query(prompt)`, which then answers AutoPI's judge requests too; it
+receives no benchmark objects.
 
 ## Taxonomies
 

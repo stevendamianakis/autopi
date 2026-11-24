@@ -10,7 +10,7 @@ Python names) predate the paper's terms and are kept, so saved logs, analysis sc
 
 | Earlier name (still accepted) | Name since 0.4.0 | In the paper |
 |---|---|---|
-| `--refiner` | `--generator` | the **generator**; its endpoint also serves the judge |
+| `--refiner` | `--generator` | the **generator**; its endpoint also serves the judge unless `--autopi-judge` names another model |
 | `--refiner-tokenizer` | `--generator-tokenizer` | |
 | `-k`, `--paraphrase-reps` | `--sweep-exploits` | **sweep exploit** ×r, variants of each failed sweep line. With `--seed-only`, `-k` sets the seed exploits, as before |
 | `--seed-para-reps` | `--seed-exploits` | **seed exploit** ×r₀, rewrites of the seed |
@@ -21,7 +21,7 @@ Python names) predate the paper's terms and are kept, so saved logs, analysis sc
 | `--stack-random` | `--random-sweep-pool` | |
 | `--stack-seed` | `--sweep-pool-seed` | |
 | `--max-sequences` | `--max-subtechniques` | **sub-techniques** |
-| `--judge` | `--ipi-judge` | IPI Arena's **LLM judge**, part of its own scoring, not the paper's judge. These docs call it the scoring judge |
+| `--judge` | `--ipi-judge` | IPI Arena's **LLM judge**, part of its own scoring, not the paper's judge. These docs call it the scoring judge. The paper's judge is AutoPI's, set with `--autopi-judge` (since 0.5.0) |
 | `--worldsim` | `--ipi-worldsim` | IPI Arena's **tool simulator** (WorldSim), which simulates the tools the agent calls |
 
 An earlier and a current name of the same option can be given together only with the same value.
@@ -31,7 +31,8 @@ An earlier and a current name of the same option can be given together only with
 | In the code | In the paper | Notes |
 |---|---|---|
 | refiner: `RefinerConfig`, `refiner_model`, `VLLM_REFINER_*`, `TAX_*REFINER*`, the `refiner_logs/` folder, `models.refiner` in the run manifest, the `refiner` role in traces | **generator** | The LLM that writes every injection line except the seed |
-| diagnostic judge: the `diagnostic_judge` role in traces, `--no-judge` | **judge** | Diagnoses why an attempt failed; it shares the generator's endpoint |
+| diagnostic judge (AutoPI's judge): `--autopi-judge`, `--no-judge`, the `diagnostic_judge` role in traces, `models.diagnostic_judge` in the run manifest, `judge_config` in Python | **judge** | Diagnoses why an attempt failed, to guide the next variant. It runs on the generator's endpoint unless `--autopi-judge` names another model, and it scores nothing |
+| IPI Arena's scoring judge: `--ipi-judge`, `models.judge` in the run manifest, the `benchmark_judge` role in traces | IPI Arena's **LLM judge** (not the paper's judge) | Part of IPI Arena's own scoring: decides whether an attempt succeeded. AgentDojo has none, so its run manifest records `models.judge` (and `models.worldsim`) as null. See [which model does what](models.md#which-model-does-what) |
 | point, `AttackPoint` | **data point (scenario)** | One user task paired with one injection goal |
 | `injection_goal` | **injection goal** | The injection task as text |
 | `security=True` | the injection goal was **achieved** | An attack success, not a secure agent |

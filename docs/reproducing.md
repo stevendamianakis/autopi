@@ -22,7 +22,7 @@ the paper, use the settings it lists instead.
 | Version and defense (AgentDojo) | v1.2.2, no defense | v1.2.2, no defense | `--benchmark-version`, `--defense` |
 | Scoring judge (IPI Arena) | IPI Arena's default model, `google/gemini-2.5-flash` | The target | `--ipi-judge` |
 | Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--ipi-worldsim` |
-| Generator and judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--generator` alias |
+| Generator and AutoPI's judge | AutoPI's defaults, since their sampling is part of the method; the paper runs the judge on the generator | Temperature 0.7, 1,024 output tokens; the judge runs on the generator | `temperature` and `max_tokens` in the `--generator` alias (and in the `--autopi-judge` alias, if given) |
 
 - A model alias's `temperature`, `top_p` and `max_tokens` shape the target's and the generator's
   requests. On IPI Arena the scoring judge and the tool simulator keep the benchmark's own per-call
@@ -62,9 +62,9 @@ addresses or experiment outputs.
 Two runs with the same models, versions and settings can give different results. Judge a difference
 between runs against this variation.
 
-- The generator and the judge, which shares its endpoint, sample at temperature 0.7 unless the
-  `--generator` alias sets another value, so each run can write different injections. Anthropic generators use the
-  API's default sampling.
+- The generator and AutoPI's judge, which shares its endpoint unless `--autopi-judge` names another model,
+  sample at temperature 0.7 unless their alias sets another value, so each run can write different injections.
+  An Anthropic generator or AutoPI judge uses the API's default sampling.
 - Temperature 0 does not make a self-hosted target deterministic. Server load changes the batch a
   request is computed in, which changes the order in which the GPU adds numbers, so the same
   request can get a different answer, and a multi-step agent run carries the change forward. vLLM

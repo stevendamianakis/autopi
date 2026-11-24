@@ -140,6 +140,12 @@ class StrategyEngine(TaxonomyEngine):
             return super().num_combos
         return sum(count for _, count in self._plans.values())
 
+    @property
+    def calls_judge(self) -> bool:
+        """Whether the strategy can call AutoPI's judge: it is on and an exploit block has reps."""
+        return self.use_judge and any(block["kind"].endswith("exploit") and block["reps"] > 0
+                                      for block in self.strategy_config["blocks"])
+
     def _record(self, *args, **kwargs):
         super()._record(*args, **kwargs)
         self._attempt_meta[-1]["block_id"] = self._block_id

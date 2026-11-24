@@ -7,6 +7,40 @@ There is no dependency on the experiment servers. Two settings follow particular
 model families and are described below: the thinking switch (`thinking`) and the
 removal of reasoning a self-hosted model leaves in its reply.
 
+## Which model does what
+
+A run uses up to five models. Each option below can name a different model,
+provider and URL.
+
+| Option | Role | Default | Trace role / run manifest |
+|---|---|---|---|
+| `--target` | The agent under attack | (required) | `target` / `models.target` |
+| `--generator` | Writes the injections | `--target` | `refiner` / `models.refiner` |
+| `--autopi-judge` | **AutoPI's judge** (mechanism ①): diagnoses why an attempt failed, to guide the next variant. It scores nothing | `--generator`, as in the paper | `diagnostic_judge` / `models.diagnostic_judge` |
+| `--ipi-judge` | **IPI Arena's scoring judge**, part of the benchmark: decides whether an attempt succeeded | `--target` | `benchmark_judge` / `models.judge` |
+| `--ipi-worldsim` | IPI Arena's tool simulator (WorldSim) | `--ipi-judge`, else `--target` | `worldsim` / `models.worldsim` |
+
+The two judges are different models with different jobs. AutoPI's judge is part of
+the attack: it reads a failed attempt and tells the generator why it failed.
+`--no-judge` switches it off, and the manifest then records `models.diagnostic_judge`
+as null. IPI Arena's scoring judge is part of the benchmark's evaluation, which AutoPI
+leaves unchanged. AgentDojo scores attempts with its own checks and has neither a
+scoring judge nor a tool simulator: it refuses the `--ipi-*` options, and its run
+manifest records `models.judge` and `models.worldsim` as null. `--judge` and
+`--worldsim`, the names before version 0.4.0, still set IPI Arena's scoring judge and
+simulator, and a run that uses `--judge` prints a note saying so.
+
+AutoPI's judge runs on the generator's endpoint, with its settings and its
+`--generator-tokenizer`, unless `--autopi-judge` names another model. A judge of its
+own takes its alias's settings (`temperature`, `max_tokens` with the generator's
+1,024-token default, `tokenizer_path` and the rest) and gets its own test request
+before the first scenario. The judge diagnoses only before seed and sweep exploits,
+so a schedule without them, such as the L1 strategy, never calls it; `--autopi-judge`
+then prints a note. In Python, pass `judge_config=RefinerConfig(endpoint=...)` to
+`TaxonomyEngine` or `StrategyEngine`.
+
+## Model aliases
+
 The YAML `models` mapping supports these fields:
 
 | Field | Meaning |
@@ -18,24 +52,21 @@ The YAML `models` mapping supports these fields:
 | `tool_mode` | AgentDojo: `native` API tools (default) or `prompted` text tools; `--tool-calling` overrides it |
 | `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`), and an `ollama` generator, which calls Ollama's native chat API, as `think` (`true` or `false`). It is sent as `chat_template_kwargs.enable_thinking`, the switch Qwen-style templates read; a family with another switch (GPT-OSS, DeepSeek) ignores it, so use `server` and set the family's own field in `extra_body` |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
-| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides for the target and the generator (`anthropic`: `max_tokens` only). An IPI Arena scoring judge or WorldSim alias does not send them: the benchmark's own per-call values, part of its scoring, are kept |
+| `temperature`, `top_p`, `max_tokens` | Optional decoding overrides for the target, the generator and AutoPI's judge (`anthropic`: `max_tokens` only). An IPI Arena scoring judge or WorldSim alias does not send them: the benchmark's own per-call values, part of its scoring, are kept |
 | `max_tokens_field` | `max_tokens` (default) or `max_completion_tokens`, for `openai`/`openai-compatible` endpoints. OpenAI's o-series reasoning models take the output cap only as `max_completion_tokens`; set this and `omit_parameters: [temperature]` for them. Models that support tool calling only through the Responses API cannot be targets (see below) |
 | `timeout`, `retries` | Request timeout in seconds and the retry count for connection, timeout, rate-limit and server errors. On the generator's HTTP path (`openai-compatible`, `openai`, `ollama`) a rate limit (HTTP 429) is retried at least five times and waits as long as the server's `Retry-After` asks, up to 120 seconds a wait; the provider SDKs (targets, IPI Arena clients, Anthropic and Google generators) apply their own retry rules with this count |
 | `reasoning_effort` | Optional reasoning-effort field, sent on OpenAI-compatible request paths (`openai-compatible` and `openai` endpoints, `ollama` targets, and every IPI Arena client). The native `anthropic` and `google` clients (AgentDojo targets, generators) have no such field and refuse it; use `extra_body` there. An `ollama` generator calls Ollama's native chat API, which has no such field either: the CLI prints a note, and the native API's own field goes in `extra_body` |
 | `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`, or the API's own spelling `thinkingConfig`). Google fields are checked against the SDK's `GenerateContentConfig`, so a misspelt field is refused at setup |
 | `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google; with `max_tokens_field: max_completion_tokens`, also that field). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires. On an Ollama generator, `max_tokens` here drops its `num_predict` option |
 
-The generator and the judge (the LLM that diagnoses failed attempts) use
-`--generator` and share one configured endpoint, as in the paper. `--ipi-judge` is IPI Arena's **benchmark scoring judge**;
-it defaults to the target. `--ipi-worldsim` is its tool simulator and defaults to
-the benchmark judge. These have independent model aliases and URLs. A judge or
-WorldSim alias's `temperature`, `top_p` and `max_tokens` are **not** sent: IPI
-Arena sets its own on each judge and simulator call (temperature 0, a 4,096-token
-judge cap, a 2,048-token WorldSim cap), and those are part of its scoring. That
-cap includes any reasoning, so a reasoning model there may need a low reasoning
-effort or thinking off. (`omit_parameters`, `extra_body`, `reasoning_effort` and the
-removals a provider requires still apply to every role, since they describe what a
-model accepts, not how it is scored.)
+An IPI Arena scoring judge or WorldSim alias's `temperature`, `top_p` and
+`max_tokens` are **not** sent: IPI Arena sets its own on each judge and simulator
+call (temperature 0, a 4,096-token judge cap, a 2,048-token WorldSim cap), and those
+are part of its scoring. That cap includes any reasoning, so a reasoning model there
+may need a low reasoning effort or thinking off. (`omit_parameters`, `extra_body`,
+`reasoning_effort` and the removals a provider requires still apply to every role,
+since they describe what a model accepts, not how it is scored.) AutoPI's judge is
+not part of the scoring, so its alias's decoding settings apply, as the generator's do.
 
 An Ollama generator alias merges an `extra_body.options` mapping (for example
 `num_ctx`) into AutoPI's sampling options rather than replacing them, and sends
@@ -172,8 +203,8 @@ The threat model gives the attacker the agent's visible replies and tool calls, 
 its reasoning. How AutoPI keeps reasoning out depends on where it appears:
 
 - **Anthropic** returns thinking as typed blocks. AgentDojo keeps them in its own
-  messages (and its scoring reads them), but AutoPI drops them from the transcript its
-  judge and context blending read.
+  messages (and its scoring reads them), but AutoPI drops them from the transcript
+  AutoPI's judge and context blending read.
 - **Gemini** returns no thoughts unless `include_thoughts` is requested, and AgentDojo
   would turn returned thoughts into ordinary text. A target alias that requests them,
   in either spelling (`include_thoughts` or the API's `includeThoughts`), is refused
@@ -193,8 +224,8 @@ its reasoning. How AutoPI keeps reasoning out depends on where it appears:
   cut off before it closes (all of the reply), and, with `thinking: on`, the text
   before a first `</think>` that no `<think>` precedes (a template that puts the
   opener in the prompt). A tag later in a reply is content and is kept, for example
-  an injected token the agent quotes in a tool argument, or IPI Arena's judge
-  quoting the injection.
+  an injected token the agent quotes in a tool argument, or IPI Arena's scoring
+  judge quoting the injection.
 - **A thinking-off endpoint** does not reason, so nothing is removed. A hosted service
   configured as `openai-compatible` (Azure, for example) returns no reasoning in its
   reply; leaving its thinking at the default `server` is safe too, since only a reply
@@ -202,7 +233,7 @@ its reasoning. How AutoPI keeps reasoning out depends on where it appears:
   says (GPT-OSS, DeepSeek-R1) should be configured with `thinking: server` and served
   with a reasoning parser; without one, and with the opener in the prompt, use
   `thinking: on` so that the text before `</think>` is removed.
-- **The generator and the judge**, when self-hosted and not thinking-off,
+- **The generator and AutoPI's judge**, when self-hosted and not thinking-off,
   have reasoning that opens their reply removed before the line or the
   `FAILURE_MODE` is parsed, including the text before a closing tag when AutoPI's
   answer follows it. A closing tag inside the generated line itself is kept.
@@ -213,13 +244,15 @@ A vLLM server with a native tool parser can remove `<function=...>` text from
 `message.content`, even when AgentDojo expects to parse that text itself. With
 recovery enabled, AutoPI requests `return_token_ids: true` and decodes the
 generated token ids with the exact served tokenizer before normal template,
-judge or prompted-tool parsing. Generator and judge text keeps special
+judge or prompted-tool parsing. Generator and AutoPI judge text keeps special
 tokens such as `<|im_start|>`, since a structural injection can be written with
 them, and drops only the end-of-turn token that stopped generation. Target text
 skips special tokens, as the server's own text does.
 
 To enable it, set `tokenizer_path` for the affected model alias,
-or pass `--target-tokenizer FILE` / `--generator-tokenizer FILE`. Install the
+or pass `--target-tokenizer FILE` / `--generator-tokenizer FILE` (which also covers
+AutoPI's judge while it runs on the generator; a separate `--autopi-judge` reads its
+alias's `tokenizer_path`). Install the
 `recovery` extra. Recovery requires thinking off and non-streaming text requests.
 For an AgentDojo target it also requires prompted tool calling (`--tool-calling prompted`
 or `tool_mode: prompted`). The server must
@@ -234,8 +267,9 @@ loading a bad generator tokenizer stops the run before the scenario is logged.
 
 Recovery is opt-in because it is not a standard OpenAI API feature and requires
 the correct tokenizer. Ordinary endpoints use their visible text. **Do not apply
-raw recovery to IPI Arena target/judge/WorldSim clients**: those use native tools
-and must retain the server's parsed tool calls. Its generator can use recovery.
+raw recovery to IPI Arena's target, scoring judge or WorldSim clients**: those use
+native tools and must retain the server's parsed tool calls. The generator and
+AutoPI's judge can use recovery on either benchmark.
 Recovery requires thinking off, so recovered text is used as decoded, with no
 reasoning removed.
 

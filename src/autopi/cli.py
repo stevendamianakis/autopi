@@ -19,14 +19,16 @@ from autopi.models.registry import (
 INJECTION_PLACEMENTS = ("agentdojo", "all", "first")
 
 
-def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[str] | None,
+def _build_adapter(benchmark: str, target: str, ipi_judge: str | None, suites: list[str] | None,
                    user_tasks: list[str] | None, injection_tasks: list[str] | None,
                    benchmark_version: str | None, defense: str | None,
                    ipi_ignore_concealment: bool = False, target_thinking: str | None = None,
                    target_max_tokens: int | None = None, ipi_behaviors_path: str | None = None,
-                   target_endpoint=None, judge_endpoint=None, worldsim=None, worldsim_endpoint=None,
+                   target_endpoint=None, ipi_judge_endpoint=None, ipi_worldsim=None, ipi_worldsim_endpoint=None,
                    journal=None, ipi_max_steps=None, ipi_harness_retries=2,
                    injection_placement: str = "agentdojo"):
+    """The benchmark's adapter. The ``ipi_*`` judge and WorldSim are IPI Arena's own scoring
+    models; AutoPI's judge, which diagnoses failed attempts, belongs to the engine instead."""
     if benchmark == "agentdojo":
         from autopi.adapters.agentdojo import AgentDojoAdapter
 
@@ -39,11 +41,11 @@ def _build_adapter(benchmark: str, target: str, judge: str | None, suites: list[
     if benchmark == "ipiarena":
         from autopi.adapters.ipi_arena import IPIArenaAdapter
 
-        return IPIArenaAdapter(target, judge=judge, categories=suites or None,
+        return IPIArenaAdapter(target, judge=ipi_judge, categories=suites or None,
                                behaviors=user_tasks or None, behaviors_path=ipi_behaviors_path,
                                ignore_concealment=ipi_ignore_concealment, target_thinking=target_thinking,
-                               target_endpoint=target_endpoint, judge_endpoint=judge_endpoint,
-                               worldsim=worldsim, worldsim_endpoint=worldsim_endpoint, journal=journal,
+                               target_endpoint=target_endpoint, judge_endpoint=ipi_judge_endpoint,
+                               worldsim=ipi_worldsim, worldsim_endpoint=ipi_worldsim_endpoint, journal=journal,
                                max_steps=ipi_max_steps, harness_retries=ipi_harness_retries)
     raise click.BadParameter(f"unknown benchmark {benchmark!r}")
 
@@ -63,25 +65,50 @@ def _provider_environment() -> dict:
             if os.environ.get(name)}
 
 
-def _check_generator(engine) -> None:
+def _check_generator(engine, *, judge: bool = False) -> None:
     """Send the generator one short request through the engine's own request path, with the
-    run's settings. Raise a ClickException when it fails, unless the provider refused the text on
-    content-policy grounds (the settings were accepted)."""
+    run's settings, and with ``judge`` also AutoPI's judge on its own endpoint. Raise a
+    ClickException when one fails, unless the provider refused the text on content-policy
+    grounds (the settings were accepted)."""
     from autopi.harness.journal import TraceWriteError
     from autopi.models.clients import is_content_policy_rejection
 
-    try:
-        engine._query("Reply with the single word OK.")
-    except TraceWriteError as exc:
-        # The trace could not be written; that says nothing about the generator.
-        raise click.ClickException(str(exc)) from exc
-    except Exception as exc:
-        if is_content_policy_rejection(exc):
-            return
-        raise click.ClickException(
-            f"the generator rejected a test request with the run's settings ({type(exc).__name__}: "
-            f"{str(exc)[:200]}). Check its model id, key and settings (for example temperature, "
-            "max_tokens or max_tokens_field, thinking) before starting the run") from exc
+    for who, querying_judge in [("the generator", False)] + ([("AutoPI's judge (--autopi-judge)", True)] if judge else []):
+        engine._querying_judge = querying_judge
+        try:
+            engine._query("Reply with the single word OK.")
+        except TraceWriteError as exc:
+            # The trace could not be written; that says nothing about the model.
+            raise click.ClickException(str(exc)) from exc
+        except Exception as exc:
+            if is_content_policy_rejection(exc):
+                continue
+            raise click.ClickException(
+                f"{who} rejected a test request with the run's settings ({type(exc).__name__}: "
+                f"{str(exc)[:200]}). Check its model id, key and settings (for example temperature, "
+                "max_tokens or max_tokens_field, thinking) before starting the run") from exc
+        finally:
+            engine._querying_judge = False
+
+
+def _text_model_endpoint(spec: str, catalog, *, tokenizer_path=None, ollama_subject: str = "the Ollama generator"):
+    """The endpoint of a role that only writes text, the generator or AutoPI's judge, with the run's
+    defaults: an exact tokenizer checked at setup and a 1,024-token output cap unless set."""
+    from autopi.models.endpoints import override_endpoint, resolve_endpoint
+
+    endpoint = override_endpoint(resolve_endpoint(spec, catalog, role="refiner"), tokenizer_path=tokenizer_path)
+    if endpoint.provider == "ollama" and endpoint.reasoning_effort:
+        # The alias may serve as the target too, where Ollama's OpenAI-compatible API reads it.
+        click.echo(f"[autopi] note: {ollama_subject} calls Ollama's native chat API, which takes no "
+                   "reasoning_effort; it sends think from the alias's thinking setting. Put the native "
+                   "API's own field in extra_body to set an effort there.", err=True)
+    if endpoint.tokenizer_path:
+        from autopi.models.recovery import get_decoder
+
+        get_decoder(endpoint.tokenizer_path)
+    if endpoint.max_tokens is None:
+        endpoint = override_endpoint(endpoint, max_tokens=int(os.environ.get("VLLM_REFINER_MAX_TOKENS", "1024")))
+    return endpoint
 
 
 # Options renamed to the paper's terms in 0.4.0. Each old name still works: it is a hidden option
@@ -181,13 +208,17 @@ def main() -> None:
 @click.option("--benchmark", type=click.Choice(["agentdojo", "ipiarena"]), required=True)
 @click.option("--mode", type=click.IntRange(1, 3), default=3, show_default=True, help="Awareness mode of the generator: 3 is the paper's scenario-aware setting (it sees the user task and the injection goal); 1 and 2 write goal-blind templates.")
 @click.option("--target", required=True, help="Configured model alias, provider:MODEL_ID, or vllm:PORT:MODEL_ID.")
-@click.option("--generator", default=None, help="Generator model spec; AutoPI's judge uses it too. Defaults to --target.")
-@click.option("--ipi-judge", default=None, help="IPI Arena's scoring judge (defaults to --target). AutoPI's own judge, which diagnoses failed attempts, uses --generator.")
+@click.option("--generator", default=None, help="Generator model spec: the LLM that writes the injections. Defaults to --target. AutoPI's judge runs on it too, unless --autopi-judge names another model.")
+@click.option("--autopi-judge", default=None,
+              help="AutoPI's judge: the LLM that diagnoses why an attempt failed, to guide the next variant (mechanism ①). "
+                   "A model alias or spec, as for --generator; defaults to --generator, as in the paper. It does not "
+                   "score attempts: on IPI Arena that is the scoring judge, --ipi-judge.")
+@click.option("--ipi-judge", default=None, help="IPI Arena's scoring judge, part of the benchmark's own scoring: it decides whether an attempt succeeded. Defaults to --target. Not AutoPI's judge, which --autopi-judge sets.")
 @click.option("--ipi-worldsim", default=None, help="IPI Arena's tool simulator, WorldSim (defaults to --ipi-judge or --target).")
 @click.option("--models-config", type=click.Path(exists=True, dir_okay=False), default=None, help="YAML model alias definitions.")
 @click.option("--strategy", type=click.Path(exists=True, dir_okay=False), default=None, help="Ordered/repeatable strategy blocks in YAML.")
 @click.option("--target-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for prompted-tool target recovery.")
-@click.option("--generator-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for raw-token recovery of generator and judge replies.")
+@click.option("--generator-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for raw-token recovery of generator replies, and of AutoPI's judge replies while the judge runs on the generator. A separate --autopi-judge uses its alias's tokenizer_path.")
 @click.option("--trace-dir", type=click.Path(file_okay=False), default=None, help="Incremental traces (default: LOGDIR/traces).")
 @click.option("--dry-run", is_flag=True, help="Validate settings and enumerate scenarios without calling models.")
 @click.option("--ipi-max-steps", type=click.IntRange(1), default=None, help="IPI Arena target operation limit (benchmark default: 5).")
@@ -238,7 +269,7 @@ def main() -> None:
                    "budget, or earlier if the schedule ends first). The log then lists every success "
                    "(technique coverage of a scenario, attempt-level ASR).")
 @click.option("--max-attempts", default=None, type=click.IntRange(1), help="Hard cap on target calls per data point.")
-@click.option("--no-judge", is_flag=True, help="Disable the judge mechanism (①).")
+@click.option("--no-judge", is_flag=True, help="Disable AutoPI's judge (①), which diagnoses failed attempts. IPI Arena's scoring judge is part of the benchmark and always runs.")
 @click.option("--no-context", is_flag=True, help="Disable context-blending (②).")
 @click.option("--no-legitimize", is_flag=True, help="Disable the legitimize note.")
 @click.option("--target-thinking", default=None, type=click.Choice(list(TARGET_THINKING_CHOICES)),
@@ -272,7 +303,7 @@ def main() -> None:
 @click.option("--resume", is_flag=True, help="Skip scenarios whose log already exists (resume an interrupted run); "
                                               "scenarios an earlier run lost to infrastructure errors run last.")
 @click.option("--logdir", default=None, help="Output directory: the run manifest, one JSON log per scenario under refiner_logs/, and traces.")
-def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injection_tasks, benchmark_version,
+def run(benchmark, mode, target, generator, autopi_judge, ipi_judge, suites, user_tasks, injection_tasks, benchmark_version,
         defense, sweep_exploits, paraphrase_reps, max_sweep_level, sweep_pool_size, seed_exploits, seed_only, no_seed,
         sweep_before_seed_exploits, seed_source, seed_file, techniques, max_subtechniques, order, order_seed,
         only_sweep_level, random_sweep_pool, sweep_pool_seed, no_early_stop, max_attempts,
@@ -317,6 +348,9 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
                                    "AgentDojo; IPI Arena calls tools natively and places the injection where "
                                    "each scenario defines it")
         tool_calling = injection_placement = None
+        if context.meta.get(_OLD_NAMES_USED, {}).get("ipi_judge") == "--judge":
+            click.echo("[autopi] note: --judge is the old name of --ipi-judge, IPI Arena's scoring judge. AutoPI's "
+                       "own judge, which diagnoses failed attempts, is set with --autopi-judge.", err=True)
     else:
         # The IPI Arena options have no meaning on AgentDojo (its scoring is programmatic and it
         # simulates no tools), so they are refused rather than silently ignored.
@@ -325,7 +359,10 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
                  if context.get_parameter_source(name) == _COMMANDLINE]
         if given:
             raise click.UsageError(f"{', '.join(given)} {'apply' if len(given) > 1 else 'applies'} to IPI Arena "
-                                   "only; AgentDojo scores attempts with its own checks and simulates no tools")
+                                   "only; AgentDojo scores attempts with its own checks and simulates no tools"
+                                   + (". AutoPI's own judge, which diagnoses failed attempts, is set with "
+                                      "--autopi-judge" if context.get_parameter_source("ipi_judge") == _COMMANDLINE
+                                      else ""))
         tool_calling = tool_calling or os.environ.get("AUTOPI_TOOL_CALLING") or None
         injection_placement = injection_placement or os.environ.get("AUTOPI_INJECTION_PLACEMENT") or "agentdojo"
         if tool_calling is not None and tool_calling not in TOOL_CALLING_MODES:
@@ -369,24 +406,26 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
         target_endpoint = override_endpoint(target_endpoint, thinking=target_thinking,
                                             max_tokens=target_max_tokens, tokenizer_path=target_tokenizer,
                                             tool_mode=tool_calling)
-        refiner_endpoint = override_endpoint(resolve_endpoint(generator, catalog, role="refiner"),
-                                             tokenizer_path=generator_tokenizer)
-        if refiner_endpoint.provider == "ollama" and refiner_endpoint.reasoning_effort:
-            # The alias may serve as the target too, where Ollama's OpenAI-compatible API reads it.
-            click.echo("[autopi] note: the Ollama generator calls Ollama's native chat API, which takes no "
-                       "reasoning_effort; it sends think from the alias's thinking setting. Put the native "
-                       "API's own field in extra_body to set an effort there.", err=True)
-        if refiner_endpoint.tokenizer_path:
-            from autopi.models.recovery import get_decoder
-
-            get_decoder(refiner_endpoint.tokenizer_path)
-        if refiner_endpoint.max_tokens is None:
-            refiner_endpoint = override_endpoint(refiner_endpoint,
-                                                 max_tokens=int(os.environ.get("VLLM_REFINER_MAX_TOKENS", "1024")))
-        judge_endpoint = resolve_endpoint(ipi_judge or target, catalog)
-        worldsim_endpoint = resolve_endpoint(ipi_worldsim or ipi_judge or target, catalog)
-        secret_envs = {ep.api_key_env for ep in (target_endpoint, refiner_endpoint, judge_endpoint, worldsim_endpoint)
-                       if ep.api_key_env}
+        refiner_endpoint = _text_model_endpoint(generator, catalog, tokenizer_path=generator_tokenizer)
+        # AutoPI's judge diagnoses failed attempts. It runs on the generator's endpoint unless
+        # --autopi-judge names another model, and it never scores: IPI Arena's scoring judge
+        # (--ipi-judge) is part of the benchmark.
+        if autopi_judge is not None and no_judge:
+            raise ValueError("--no-judge switches AutoPI's judge off, so --autopi-judge has nothing to set; "
+                             "give only one of them")
+        if (autopi_judge or generator) == generator:
+            autopi_judge_endpoint = refiner_endpoint
+        else:
+            autopi_judge_endpoint = _text_model_endpoint(autopi_judge, catalog,
+                                                         ollama_subject="AutoPI's judge, on Ollama,")
+        if benchmark == "ipiarena":
+            ipi_judge_endpoint = resolve_endpoint(ipi_judge or target, catalog)
+            ipi_worldsim_endpoint = resolve_endpoint(ipi_worldsim or ipi_judge or target, catalog)
+        else:
+            # AgentDojo scores attempts with its own checks: it has no LLM judge and no simulator.
+            ipi_judge_endpoint = ipi_worldsim_endpoint = None
+        secret_envs = {ep.api_key_env for ep in (target_endpoint, refiner_endpoint, autopi_judge_endpoint,
+                                                 ipi_judge_endpoint, ipi_worldsim_endpoint) if ep and ep.api_key_env}
         journal = (Journal(trace_dir or Path(logdir) / "traces", extra_secret_envs=secret_envs)
                    if (trace_dir or logdir) and not dry_run else None)
         adapter = _build_adapter(benchmark, target, ipi_judge, list(suites), list(user_tasks),
@@ -394,7 +433,8 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
                                  ipi_ignore_concealment=ipi_ignore_concealment,
                                  target_thinking=target_thinking, target_max_tokens=target_max_tokens,
                                  ipi_behaviors_path=ipi_behaviors_path, target_endpoint=target_endpoint,
-                                 judge_endpoint=judge_endpoint, worldsim=ipi_worldsim, worldsim_endpoint=worldsim_endpoint,
+                                 ipi_judge_endpoint=ipi_judge_endpoint, ipi_worldsim=ipi_worldsim,
+                                 ipi_worldsim_endpoint=ipi_worldsim_endpoint,
                                  journal=journal, ipi_max_steps=ipi_max_steps, ipi_harness_retries=ipi_harness_retries,
                                  injection_placement=injection_placement or "agentdojo")
         seed_template, seed_name = resolve_seed(
@@ -404,7 +444,9 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
             benchmark_default_name=getattr(adapter, "default_seed_name", None), benchmark=benchmark,
             no_seed_hint="use a strategy without a seed block" if strategy_data else None)
         cfg = RefinerConfig(endpoint=refiner_endpoint, journal=journal)
-        common = dict(refiner_model=refiner_endpoint.model, refiner_config=cfg, awareness_mode=mode,
+        judge_cfg = (None if autopi_judge_endpoint is refiner_endpoint
+                     else RefinerConfig(endpoint=autopi_judge_endpoint, journal=journal))
+        common = dict(refiner_model=refiner_endpoint.model, refiner_config=cfg, judge_config=judge_cfg, awareness_mode=mode,
                       taxonomy_path=taxonomy_path, use_judge=False if no_judge else None,
                       use_context=False if no_context else None, use_legitimize=False if no_legitimize else None,
                       seed_template=seed_template, seed_name=seed_name)
@@ -422,6 +464,12 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
         # AgentDojo embeds the injection in a double-quoted YAML scalar (quotes escaped at
         # placement); IPI Arena places it in JSON, so quotes/backslashes are kept as written.
         engine.yaml_safe_output = benchmark == "agentdojo"
+        if autopi_judge is not None and not engine.use_judge:
+            raise ValueError("TAX_JUDGE=0 switches AutoPI's judge off, so --autopi-judge has nothing to set; "
+                             "unset one of them")
+        if autopi_judge is not None and not engine.calls_judge:
+            click.echo("[autopi] note: this run has no seed or sweep exploits, the only attempts that use "
+                       "AutoPI's judge, so the --autopi-judge model is never called.", err=True)
         stop = not no_early_stop and (not strategy_data or strategy_data["stop"] == "first_success")
         points = list(adapter.iter_points())[shard::num_shards]
         if limit is not None:
@@ -432,7 +480,9 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
         # --shard and --resume (IPI Arena: a browser scenario needs playwright and its Chromium).
         check_adapter_points(adapter, pending_points(points, logdir, resume))
         click.echo(f"[autopi] benchmark={benchmark} mode={mode} target={target} generator={generator} "
-                   f"sweep_lines={engine.num_combos} budget/pt={min(max_attempts or engine.attempt_budget, engine.attempt_budget)} "
+                   f"autopi_judge={(autopi_judge or generator) if engine.use_judge else 'off'} "
+                   + (f"ipi_judge={ipi_judge or target} " if benchmark == "ipiarena" else "")
+                   + f"sweep_lines={engine.num_combos} budget/pt={min(max_attempts or engine.attempt_budget, engine.attempt_budget)} "
                    f"points={len(points)} target_thinking={target_thinking} "
                    + (f"tool_calling={target_endpoint.tool_mode} placement={injection_placement} "
                       if benchmark == "agentdojo" else "")
@@ -445,8 +495,12 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
             from autopi.core.taxonomy import _BUNDLED_TAXONOMY
             settings = {
                 "benchmark": benchmark, "benchmark_version": benchmark_version or getattr(adapter, "benchmark_version", None),
+                # "diagnostic_judge" is AutoPI's judge (null when it is off); "judge" and "worldsim"
+                # are IPI Arena's scoring judge and tool simulator (null on AgentDojo).
                 "models": {"target": target_endpoint.public_config(), "refiner": refiner_endpoint.public_config(),
-                           "judge": judge_endpoint.public_config(), "worldsim": worldsim_endpoint.public_config()},
+                           "diagnostic_judge": autopi_judge_endpoint.public_config() if engine.use_judge else None,
+                           "judge": ipi_judge_endpoint.public_config() if ipi_judge_endpoint else None,
+                           "worldsim": ipi_worldsim_endpoint.public_config() if ipi_worldsim_endpoint else None},
                 "strategy": strategy_data or {"seed_only": engine.seed_only, "use_seed": engine.use_seed,
                     "k": sweep_reps, "seed_para_reps": seed_reps, "stack_depth": engine.stack_depth,
                     "stack_pool": engine.stack_pool, "stack_only": engine.stack_only, "stack_random": engine.stack_random,
@@ -473,10 +527,11 @@ def run(benchmark, mode, target, generator, ipi_judge, suites, user_tasks, injec
         # One short test request to the generator before the first scenario, with the settings the
         # run will use, so that a generator rejecting them (an unsupported temperature or max_tokens,
         # a wrong model id or key) stops the run now instead of turning it into seed-only results.
-        # Skipped when the run makes no generator request (only the seed is tried).
+        # AutoPI's judge on its own endpoint gets one too when the schedule calls it. Skipped when
+        # the run makes no generator request (only the seed is tried).
         budget = min(max_attempts or engine.attempt_budget, engine.attempt_budget)
         if not (engine.use_seed and budget <= 1):
-            _check_generator(engine)
+            _check_generator(engine, judge=autopi_judge_endpoint is not refiner_endpoint and engine.calls_judge)
         if settings is not None:
             save_run_manifest(Path(logdir), settings)
     except (ValueError, OSError) as exc:
