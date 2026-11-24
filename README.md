@@ -59,8 +59,8 @@ autopi run --benchmark agentdojo \
 > Haiku 5.5, GPT-6 Luna and more capable ones refuse to write prompt injections almost every time in
 > the generator role, which makes them impractical there. Open-weight models with less strict
 > cybersecurity safeguards work well, for example Qwen3.8-27B or Qwen3.6-35B, the generator used in the
-> paper. On the contrary, frontier models can be used without any issues as the target, as AutoPI's judge
-> (`--autopi-judge`) or as IPI Arena's scoring judge (`--ipi-judge`).
+> paper. On the contrary, frontier models can be used without any issues as the target or as AutoPI's judge
+> (`--autopi-judge`).
 
 > [!TIP]
 > Add `--dry-run` to check the settings and count the scenarios without calling a model.
