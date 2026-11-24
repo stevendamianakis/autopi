@@ -19,8 +19,9 @@ adapter → ``observe(messages, utility, security)`` → stop on success, else
 Search strategy. The default schedule above is one choice. Each block can be sized or
 switched off, and a few switches change what is searched and in what order:
 
-* ``seed_only`` only rewrites the seed and never sweeps; ``use_seed=False`` starts from the
-  sweep with no seed at all;
+* ``seed_only`` only rewrites the seed, ``paraphrase_reps`` times, and never sweeps
+  (``seed_paraphrase_reps`` must then be 0); ``use_seed=False`` starts from the sweep with no
+  seed at all;
 * ``sweep_before_seed_para`` runs the sweep before the seed exploits;
 * ``techniques`` / ``max_sequences`` restrict the sweep to part of the taxonomy, ``order``
   sets the sweep order (priority, canonical, random), and the ``stack_*`` knobs choose the
@@ -250,6 +251,11 @@ class TaxonomyEngine:
         )
         if self.seed_paraphrase_reps < 0:
             raise ValueError("seed_paraphrase_reps must be nonnegative")
+        if self.seed_only and self.seed_paraphrase_reps > 0:
+            # A seed-only schedule takes its rewrites of the seed from paraphrase_reps; these would
+            # be ignored, leaving a run of the seed alone.
+            raise ValueError("seed_only takes its number of rewrites of the seed from paraphrase_reps; "
+                             "seed_paraphrase_reps applies only to runs with a sweep")
         self.strict_refiner = os.environ.get("TAX_REFINER_STRICT", "0") != "0"
         # ── phase switches ──
         # use_seed=False: no seed attempt, the first candidate of the schedule goes first.
@@ -283,21 +289,22 @@ class TaxonomyEngine:
             self._combo_by_id = {}  # Filled only for candidates actually generated.
             if self.stack_depth >= 2 and self.stack_pool is None and self.num_combos > 5000:
                 print(
-                    f"[TAXREFINER] WARNING: stack_depth={self.stack_depth} with no stack_pool yields "
-                    f"{self.num_combos} combinations/pair -- likely infeasible. Set TAX_STACK_POOL to bound it."
+                    f"[autopi] WARNING: Ln sweeps up to n = {self.stack_depth} with no pool size give "
+                    f"{self.num_combos} lines per scenario, likely infeasible. Bound the pool with "
+                    "--sweep-pool-size (TAX_STACK_POOL)."
                 )
             if self.stack_random and self.stack_pool_ids:
-                print(f"[TAXREFINER] RANDOM Ln-sweep pool (seed={self.stack_seed}, n={len(self.stack_pool_ids)}): "
+                print(f"[autopi] RANDOM Ln-sweep pool (seed={self.stack_seed}, n={len(self.stack_pool_ids)}): "
                       f"{self.stack_pool_ids}")
             if self.stack_only:
-                print(f"[TAXREFINER] L{self.stack_only}-ONLY: sweeping only the {self.num_combos} "
+                print(f"[autopi] L{self.stack_only}-ONLY: sweeping only the {self.num_combos} "
                       f"{self.stack_only}-way sub-technique sets of the pool (no singles / other levels)")
             if self.num_combos == 0:
                 # A sweep that selects nothing is a configuration error. Without a seed the run would
                 # make no target call, and with one it would quietly become a seed-only run.
                 raise ValueError(
-                    "the sweep selects 0 combinations. Widen --techniques/--max-sequences/--stack-pool or "
-                    "lower --stack-only; for a run without a sweep use --seed-only")
+                    "the sweep selects 0 combinations. Widen --techniques, --max-subtechniques or "
+                    "--sweep-pool-size, or lower --only-sweep-level; for a run without a sweep use --seed-only")
             max_attempts = self.seed_paraphrase_reps + self.num_combos * (1 + paraphrase_reps)
 
         # ── inlined RefinedInstructionsAttack base state ──
@@ -612,7 +619,7 @@ class TaxonomyEngine:
             mode, reason, _guidance = _parse_judge(resp)
             self._refiner_request_succeeded()
         except Exception as e:
-            print(f"[TAXREFINER] judge error: {e}")
+            print(f"[autopi] judge error: {e}")
             self._check_refiner_error(e)
             return None
         finally:
@@ -676,7 +683,7 @@ class TaxonomyEngine:
                 if self._consecutive_unusable >= self.max_consecutive_unusable:
                     self.generation_stop_reason = "consecutive_unusable_generations"
                     self.has_candidate = False
-                    print(f"[TAXREFINER] ending scenario after {self._consecutive_unusable} consecutive "
+                    print(f"[autopi] ending scenario after {self._consecutive_unusable} consecutive "
                           "unusable generated candidates (no target attempts added)")
             elif status == "pending" and template is not None:
                 self._consecutive_unusable = 0
@@ -695,7 +702,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
                 self._refiner_request_succeeded()
             except Exception as e:
-                print(f"[TAXREFINER] {cid} generator error: {e}")
+                print(f"[autopi] {cid} generator error: {e}")
                 self._check_refiner_error(e)
                 self._record(cid, cname, "taxonomy", None, "refiner_error", raw=str(e)[:200], stack_level=lvl)
                 return None
@@ -732,7 +739,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
                 self._refiner_request_succeeded()
             except Exception as e:
-                print(f"[TAXREFINER] exploit generator error: {e}")
+                print(f"[autopi] exploit generator error: {e}")
                 self._check_refiner_error(e)
                 self._last_para_raw = str(e)[:200]
                 return None
@@ -776,7 +783,7 @@ class TaxonomyEngine:
         while not self.generation_stop_reason and self._combo_idx < self.num_combos:
             combo = self._combos[self._combo_idx]
             self._combo_idx += 1
-            print(f"[TAXREFINER] attempt {self.get_attempt_number()} sweep L{len(combo)} {_combo_id(combo)}")
+            print(f"[autopi] attempt {self.get_attempt_number()} sweep L{len(combo)} {_combo_id(combo)}")
             self._adaptive_block = cl_block
             template = self._generate_from_combo(combo, injection_goal)
             if template is not None:
@@ -812,7 +819,7 @@ class TaxonomyEngine:
             self._adaptive_block = cl_block + style_addendum
             self._para_reasonings = _format_signals(self._seed_para_signals)
             print(
-                f"[TAXREFINER] attempt {self.get_attempt_number()} seed-exploit "
+                f"[autopi] attempt {self.get_attempt_number()} seed-exploit "
                 f"try {self._seed_para_try}/{self.seed_paraphrase_reps} "
                 f"({len(self._seed_para_signals)} judge signal(s))"
             )
@@ -836,7 +843,7 @@ class TaxonomyEngine:
             self._cur_para_failed = []
             self._cur_seq_signals = []
             print(
-                f"[TAXREFINER] entering exploit phase: {len(self._para_sources)} failed injections "
+                f"[autopi] entering exploit phase: {len(self._para_sources)} failed injections "
                 f"x {self.paraphrase_reps} variants each"
             )
         while not self.generation_stop_reason and self._para_src_idx < len(self._para_sources):
@@ -856,7 +863,7 @@ class TaxonomyEngine:
             self._adaptive_block = cl_block + style_addendum
             self._para_reasonings = _format_signals(self._cur_seq_signals)
             print(
-                f"[TAXREFINER] attempt {self.get_attempt_number()} exploit src "
+                f"[autopi] attempt {self.get_attempt_number()} exploit src "
                 f"{self._para_src_idx + 1}/{len(self._para_sources)} try {self._para_try}/{self.paraphrase_reps} "
                 f"of {src['src']} ({len(self._cur_seq_signals)} judge signal(s))"
             )
@@ -985,4 +992,4 @@ class TaxonomyEngine:
         finally:
             if tmp_file.exists():
                 tmp_file.unlink()
-        print(f"[TAXREFINER] scenario log saved to {log_file}")
+        print(f"[autopi] scenario log saved to {log_file}")

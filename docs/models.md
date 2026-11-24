@@ -26,8 +26,8 @@ The YAML `models` mapping supports these fields:
 | `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google; with `max_tokens_field: max_completion_tokens`, also that field). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires. On an Ollama generator, `max_tokens` here drops its `num_predict` option |
 
 The generator and the judge (the LLM that diagnoses failed attempts) use
-`--refiner` and share one configured endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
-it defaults to the target. `--worldsim` is its tool simulator and defaults to
+`--generator` and share one configured endpoint, as in the paper. `--ipi-judge` is IPI Arena's **benchmark scoring judge**;
+it defaults to the target. `--ipi-worldsim` is its tool simulator and defaults to
 the benchmark judge. These have independent model aliases and URLs. A judge or
 WorldSim alias's `temperature`, `top_p` and `max_tokens` are **not** sent: IPI
 Arena sets its own on each judge and simulator call (temperature 0, a 4,096-token
@@ -219,7 +219,7 @@ them, and drops only the end-of-turn token that stopped generation. Target text
 skips special tokens, as the server's own text does.
 
 To enable it, set `tokenizer_path` for the affected model alias,
-or pass `--target-tokenizer FILE` / `--refiner-tokenizer FILE`. Install the
+or pass `--target-tokenizer FILE` / `--generator-tokenizer FILE`. Install the
 `recovery` extra. Recovery requires thinking off and non-streaming text requests.
 For an AgentDojo target it also requires prompted tool calling (`--tool-calling prompted`
 or `tool_mode: prompted`). The server must

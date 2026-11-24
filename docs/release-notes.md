@@ -1,5 +1,21 @@
 # Release notes
 
+## Version 0.4.0
+
+The command-line options use the paper's terms. Their earlier names still work, without being
+shown in `--help`, so older commands and scripts run unchanged. No bundled benchmark file
+changed, and AgentDojo's and IPI Arena's own execution, injection and scoring are unchanged. The
+generator and judge prompts are unchanged. Environment variables, the Python interface and the
+fields of the run manifest, scenario logs and traces keep their names. The run manifest
+fingerprints AutoPI's code, so a run started with 0.3.3 cannot be resumed with 0.4.0.
+
+| Area | Change |
+|---|---|
+| Option names | `--generator` (was `--refiner`), `--generator-tokenizer` (`--refiner-tokenizer`), `--sweep-exploits` (`-k`, `--paraphrase-reps`), `--seed-exploits` (`--seed-para-reps`), `--sweep-before-seed-exploits` (`--sweep-before-seed-para`), `--max-sweep-level` (`--stack-depth`), `--only-sweep-level` (`--stack-only`), `--sweep-pool-size` (`--stack-pool`), `--random-sweep-pool` (`--stack-random`), `--sweep-pool-seed` (`--stack-seed`), `--max-subtechniques` (`--max-sequences`), `--ipi-judge` (`--judge`) and `--ipi-worldsim` (`--worldsim`); the [glossary](glossary.md) maps them to the paper. An earlier name sets the same value as the current one, so both write the same run manifest and logs and `--resume` accepts either; an earlier and a current name with different values are refused. `--ipi-judge` says that the option picks IPI Arena's own scoring judge, not AutoPI's judge, which runs on the generator's endpoint and which `--no-judge` switches off |
+| Seed-only runs | `--seed-only` takes its number of rewrites of the seed from `--seed-exploits`, and `-k` still sets it. Before, `--seed-only` (or `TAX_SEED_ONLY`) with `--seed-para-reps` silently ran the seed alone, one attempt per scenario. A seed-only run refuses `--sweep-exploits`, and two different counts from `--seed-exploits` and `-k`. In Python, `TaxonomyEngine(seed_only=True)` refuses a positive `seed_paraphrase_reps`, which it ignored |
+| Messages | Errors and warnings name the options as the command line gave them. A schedule flag next to `--strategy` is now named as a flag (it was named as a Python argument, such as `paraphrase_reps`), and a negative `--sweep-exploits` or `--seed-exploits` is refused by the option itself. The first line of a run prints `generator=` and `sweep_lines=` (was `refiner=` and `combos=`), and the engine's console lines start with `[autopi]` (was `[TAXREFINER]`) |
+| Tests | Regression tests for each change, each checked to fail when its change is reverted |
+
 ## Version 0.3.3
 
 A small fix release. No bundled benchmark file changed, and AgentDojo's and IPI

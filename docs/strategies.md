@@ -166,8 +166,9 @@ retains that explanation.
 `--no-early-stop` overrides `stop: first_success` for a coverage
 run. Use a fresh output folder when changing settings or code.
 
-Without `--strategy`, the existing schedule flags remain available. Do not mix
-those scheduling flags with `--strategy`; define the order and counts in one place.
+Without `--strategy`, the schedule flags remain available (`--seed-exploits`,
+`--sweep-exploits`, `--max-sweep-level` and the other sweep options in `autopi run --help`).
+Do not mix those scheduling flags with `--strategy`; define the order and counts in one place.
 Seed selection, model settings, awareness mode, mechanism switches, taxonomy
 path, task selection, sharding and output options apply to either interface.
 

@@ -463,8 +463,9 @@ def test_stack_only_sweeps_one_level(monkeypatch):
 def test_cli_exposes_the_strategy_switches():
     out = CliRunner().invoke(cli_main, ["run", "--help"])
     assert out.exit_code == 0
-    for flag in ("--no-early-stop", "--seed-only", "--no-seed", "--sweep-before-seed-para", "--techniques",
-                 "--max-sequences", "--order", "--order-seed", "--stack-only", "--stack-random", "--stack-seed"):
+    for flag in ("--no-early-stop", "--seed-only", "--no-seed", "--sweep-before-seed-exploits", "--techniques",
+                 "--max-subtechniques", "--order", "--order-seed", "--only-sweep-level", "--random-sweep-pool",
+                 "--sweep-pool-seed"):
         assert flag in out.output
 
 

@@ -72,7 +72,7 @@ the Full strategy on all 949 AgentDojo scenarios:
 ```bash
 autopi run --benchmark agentdojo \
   --target vllm:8000:MODEL_ID \
-  --refiner vllm:8000:MODEL_ID \
+  --generator vllm:8000:MODEL_ID \
   --strategy configs/strategies/full.yaml \
   --logdir runs/agentdojo-full
 ```
@@ -84,8 +84,9 @@ AgentDojo's prompted text format instead, for a server without a tool-call parse
 
 Add `--dry-run` to check the settings and count the scenarios without calling a model. A run with
 `--logdir` writes its resolved settings (a run manifest) and every attempt of every scenario to that
-folder. Some code names differ from the paper's terms: the generator, for example, is chosen with
-`--refiner`. The [glossary](docs/glossary.md) maps each code name to the paper's term.
+folder. The options use the paper's terms, and their names before version 0.4.0, such as `--refiner`
+for `--generator`, still work. Some names in saved logs, environment variables and the Python code
+differ from the paper's terms; the [glossary](docs/glossary.md) maps them.
 
 <details>
 <summary><b>Hosted models and per-role settings</b></summary>
@@ -97,7 +98,7 @@ from environment variables and never stored in the file.
 ```bash
 cp configs/models.example.yaml configs/models.local.yaml
 autopi run --benchmark agentdojo --models-config configs/models.local.yaml \
-  --target target --refiner generator \
+  --target target --generator generator \
   --strategy configs/strategies/full.yaml --logdir runs/agentdojo-full
 ```
 
@@ -117,7 +118,7 @@ pip install -e benchmarks/ipi_arena
 pip install -e 'benchmarks/ipi_arena[browser]' && python -m playwright install chromium
 
 autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
-  --target arena-target --refiner generator --judge arena-judge --worldsim arena-judge \
+  --target arena-target --generator generator --ipi-judge arena-judge --ipi-worldsim arena-judge \
   --seed-source agentdojo \
   --strategy configs/strategies/full.yaml --logdir runs/ipiarena-full
 ```
@@ -270,13 +271,13 @@ the paper, use the settings it lists instead.
 | Tool calling (AgentDojo) | Native | Native | `--tool-calling` |
 | Injection placement (AgentDojo) | `agentdojo`, the vectors the user task reads | `agentdojo` | `--injection-placement` |
 | Version and defense (AgentDojo) | v1.2.2, no defense | v1.2.2, no defense | `--benchmark-version`, `--defense` |
-| Scoring judge (IPI Arena) | IPI Arena's default model, `google/gemini-2.5-flash` | The target | `--judge` |
-| Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--worldsim` |
-| Generator and judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--refiner` alias |
+| Scoring judge (IPI Arena) | IPI Arena's default model, `google/gemini-2.5-flash` | The target | `--ipi-judge` |
+| Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--ipi-worldsim` |
+| Generator and judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--generator` alias |
 
 - A model alias's `temperature`, `top_p` and `max_tokens` shape the target's and the generator's
   requests. On IPI Arena the scoring judge and the tool simulator keep the benchmark's own per-call
-  values, which are part of its scoring; pick their models with `--judge` and `--worldsim`.
+  values, which are part of its scoring; pick their models with `--ipi-judge` and `--ipi-worldsim`.
 - Anthropic targets accept no sampling parameters, so they run with the API's default sampling.
 - OpenAI's o-series reasoning models reject a non-default temperature and take the output cap only as
   `max_completion_tokens`. Use an alias with `max_tokens_field: max_completion_tokens` and
@@ -313,7 +314,7 @@ Two runs with the same models, versions and settings can give different results.
 between runs against this variation.
 
 - The generator and the judge, which shares its endpoint, sample at temperature 0.7 unless the
-  generator's `--refiner` alias sets another value, so each run can write different injections. Anthropic generators use the
+  `--generator` alias sets another value, so each run can write different injections. Anthropic generators use the
   API's default sampling.
 - Temperature 0 does not make a self-hosted target deterministic. Server load changes the batch a
   request is computed in, which changes the order in which the GPU adds numbers, so the same
