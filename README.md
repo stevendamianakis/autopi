@@ -186,8 +186,14 @@ blocks:
 ```
 
 Blocks can be omitted, reordered or repeated, as long as each exploit block follows the block it
-refines, and every sweep takes its own taxonomy subset, order, combination level and limit. See the
-[strategy guide](docs/strategies.md).
+refines, and every sweep takes its own taxonomy subset, order, combination level and limit. The
+combination level n (`level` in the YAML) makes a sweep an Ln sweep, which writes one line for each
+set of n sub-techniques: L1 writes one line per sub-technique, L2 one for each set of two, and so on.
+Levels above 1 follow the intuition that working injections are often compositions of several
+techniques. The PIAtlas paper ([arXiv:2610.24999](https://arxiv.org/abs/2610.24999)) finds that
+attacks usually combine several techniques, with the median curated injection template spanning two
+classes and three techniques, and that high-impact real-world attacks stack a few classes. The
+strategies from the AutoPI paper never sweep above L1. See the [strategy guide](docs/strategies.md).
 
 ## Taxonomy
 
