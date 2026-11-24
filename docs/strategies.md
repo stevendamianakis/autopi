@@ -43,32 +43,32 @@ has no default seed template: choose `--seed-source agentdojo`, `--seed-file`,
 or a strategy with no seed block. The seed is benchmark content, not a model
 or infrastructure configuration. Its names/text can be changed with a seed file.
 
-`sweep` generates one candidate per set of `level` taxonomy units. `techniques`
-accepts family, technique or sub-technique ids. Omit it for the full taxonomy.
+`sweep` generates one line per set of `level` sub-techniques. `techniques`
+accepts class, technique or sub-technique ids. Omit it for the full taxonomy.
 A sweep block that selects zero combinations (for example a `level` above the
-number of selected units, or an empty selection) is rejected when the strategy
+number of selected sub-techniques, or an empty selection) is rejected when the strategy
 loads, rather than running an empty schedule.
 `order` is `priority`, `canonical` (file order), or `random` with `order_seed`.
 Optional `order_ids` is an ordered list of sub-technique ids to put first;
-unlisted selected units follow in the chosen order. `pool_size` restricts the
+unlisted selected sub-techniques follow in the chosen order. `pool_size` restricts the
 combination pool after ordering. `limit` caps the number of combinations tried.
 Combinations are unordered sets, sampled without repetition within a sweep.
 Higher levels are generated lazily; setting a small target budget does not
 allocate billions of combinations.
 
-`seed_exploit` makes `reps` variants of the latest earlier seed. A seed
+`seed_exploit` makes `reps` rewrites of the latest earlier seed. A seed
 block must precede it, and the seed must not have succeeded; a seed attempt that
-failed in the infrastructure is refined all the same (its first variant simply
-has no diagnostic feedback to work from). `sweep_exploit` makes `reps` variants of
+failed in the infrastructure is refined all the same (its first rewrite simply
+has no judge feedback to work from). `sweep_exploit` makes `reps` variants of
 each failed sweep line from the named earlier `source`. If source is omitted, it
 uses all earlier sweeps. Repeating an exploit block continues that source's
-failed-variant history and accumulated diagnostic feedback. Repeating a sweep
+history of failed rewrites or variants and accumulated judge feedback. Repeating a sweep
 creates fresh source lines, tracked by their originating block and target attempt.
 
 A candidate the generator could not write makes no target run and does **not**
 consume the attempt budget: an invalid, empty or refused generator output is
 logged and skipped. A line that opens like a refusal ("I can't…", "I'm sorry…")
-counts as one, also inside the template delimiters, so a written line that opens
+counts as one, also inside the `[TEMPLATE_START]` and `[TEMPLATE_END]` delimiters, so a written line that opens
 this way is skipped too, and so is a prompt the provider refuses on content-policy
 grounds. Before the first scenario, a command-line run sends the generator **one
 short test request** with the run's settings and stops if it fails, so a generator
@@ -80,7 +80,7 @@ run before the scenario is logged, so `--resume` repeats it. This includes TLS/S
 and proxy failures. A missing, unreadable or invalid tokenizer is a setup error, and
 so is a rejected key, account or model id (HTTP 401, 402, 403 other than a
 moderation block, 404, or an invalid API key). Three consecutive unexpected request
-errors from the generator or diagnostic judge also stop the run before logging the
+errors from the generator or the judge also stop the run before logging the
 current scenario. Any other HTTP 400 is a per-prompt rejection and stays a skippable
 candidate, but **25 consecutive HTTP 400s** from a role stop the run, since a
 generator that rejects every request would otherwise turn it into seed-only results.
@@ -89,7 +89,7 @@ or a content-policy refusal clears them.
 
 A target run that fails in the infrastructure (a transport, provider or parse
 error, or a request the provider rejected) does consume the budget, but never
-becomes a failed source line or a failed-variant example. A scenario whose every
+becomes a failed sweep line to refine or a failed rewrite or variant listed in an exploit prompt. A scenario whose every
 attempt was an infrastructure failure is not logged and stays out of ASR; the
 summary counts it, and `--resume` runs it again. The run stops when the target keeps
 failing with **endpoint errors**: it cannot be reached, times out, is rate limited,
@@ -109,7 +109,7 @@ denominator. On IPI Arena such a refusal is a failed run that IPI Arena leaves o
 its ASR, and AutoPI does the same. Infrastructure failures inside a scored scenario
 are counted in the summary and the scenario log. Successful source lines are not
 selected for exploitation. If continuing after a successful variant, that success
-is not sent to the diagnostic judge as a failure.
+is not sent to the judge as a failure.
 
 The finite schedule can end before the budget (for example after skipped
 generator outputs or when no failed sources exist). `--max-attempts` can impose
@@ -117,7 +117,7 @@ a smaller cap. To bound huge sweeps whose generator keeps refusing or returning
 unusable output, the scenario also ends after **200 consecutive unusable generated
 candidates**. A candidate can use the existing two prompt tiers before it is
 skipped; neither tier adds a target attempt. The streak spans sweep and exploit
-blocks, ignores fixed-seed blocks and diagnostic replies, resets on a usable
+blocks, ignores seed blocks and judge replies, resets on a usable
 generated candidate, and starts fresh for each scenario. The 132-unit L1 sweep
 fits below the default limit even if every candidate is unusable. The scenario
 is logged with `generation_stop_reason: consecutive_unusable_generations`, its
@@ -131,7 +131,7 @@ corresponding `max_consecutive_unusable`, `max_consecutive_refiner_errors` and
 `max_consecutive_refiner_400` constructor arguments. Resolved limits appear in the
 manifest and scenario logs.
 
-Modes 1 and 2 receive only the diagnostic judge's fixed failure-category phrase;
+Modes 1 and 2 receive only the judge's fixed failure-category phrase;
 its free-text explanation is withheld to keep the injection goal hidden. Mode 3
 retains that explanation.
 

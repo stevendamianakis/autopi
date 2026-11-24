@@ -87,15 +87,15 @@ def main() -> None:
 
 @main.command()
 @click.option("--benchmark", type=click.Choice(["agentdojo", "ipiarena"]), required=True)
-@click.option("--mode", type=click.IntRange(1, 3), default=3, show_default=True, help="Refiner awareness mode.")
+@click.option("--mode", type=click.IntRange(1, 3), default=3, show_default=True, help="Awareness mode of the generator: 3 is the paper's scenario-aware setting (it sees the user task and the injection goal); 1 and 2 write goal-blind templates.")
 @click.option("--target", required=True, help="Configured model alias, provider:MODEL_ID, or vllm:PORT:MODEL_ID.")
-@click.option("--refiner", default=None, help="Refiner/attacker model spec (defaults to --target).")
-@click.option("--judge", default=None, help="Benchmark judge (IPI Arena; defaults to --target). The diagnostic judge uses --refiner.")
+@click.option("--refiner", default=None, help="Generator model spec (the code calls the generator the refiner); the judge uses it too. Defaults to --target.")
+@click.option("--judge", default=None, help="IPI Arena's scoring judge (defaults to --target). AutoPI's own judge, which diagnoses failed attempts, uses --refiner.")
 @click.option("--worldsim", default=None, help="IPI tool simulator model (defaults to --judge or --target).")
 @click.option("--models-config", type=click.Path(exists=True, dir_okay=False), default=None, help="YAML model alias definitions.")
 @click.option("--strategy", type=click.Path(exists=True, dir_okay=False), default=None, help="Ordered/repeatable strategy blocks in YAML.")
 @click.option("--target-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for prompted-tool target recovery.")
-@click.option("--refiner-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for generator and diagnostic judge recovery.")
+@click.option("--refiner-tokenizer", type=click.Path(exists=True, dir_okay=False), default=None, help="Exact tokenizer.json for raw-token recovery of generator and judge replies.")
 @click.option("--trace-dir", type=click.Path(file_okay=False), default=None, help="Incremental traces (default: LOGDIR/traces).")
 @click.option("--dry-run", is_flag=True, help="Validate settings and enumerate scenarios without calling models.")
 @click.option("--ipi-max-steps", type=click.IntRange(1), default=None, help="IPI Arena target operation limit (benchmark default: 5).")
@@ -106,17 +106,17 @@ def main() -> None:
 @click.option("-it", "--injection-task", "injection_tasks", multiple=True, help="Restrict to these injection task ids.")
 @click.option("--benchmark-version", default=None, help="AgentDojo benchmark version.")
 @click.option("--defense", default=None, help="AgentDojo defense to run under (default: none).")
-@click.option("-k", "--paraphrase-reps", default=0, show_default=True, help="Paraphrases per failed candidate.")
-@click.option("--stack-depth", default=1, show_default=True, help="Max sub-techniques blended per line (1 = L1 sweep).")
-@click.option("--stack-pool", default=None, type=int, help="Pool size bounding L>=2 combinations.")
-@click.option("--seed-para-reps", default=0, show_default=True, help="Seed-paraphrase attempts before the sweep.")
+@click.option("-k", "--paraphrase-reps", default=0, show_default=True, help="Sweep exploits: variants of each failed sweep line. With --seed-only, rewrites of the seed (seed exploits).")
+@click.option("--stack-depth", default=1, show_default=True, help="Run Ln sweeps up to this n, one line per set of n sub-techniques (1 = L1 sweep only).")
+@click.option("--stack-pool", default=None, type=int, help="Number of sub-techniques that --stack-only and Ln sweeps with n >= 2 draw from: the first in the sweep order, or a random draw with --stack-random [default: all].")
+@click.option("--seed-para-reps", default=0, show_default=True, help="Seed exploits (rewrites of the seed) before the sweep.")
 @click.option("--seed-only", is_flag=True, default=None,
-              help="Paraphrase the seed only (-k paraphrases), no taxonomy sweep. Env: TAX_SEED_ONLY.")
+              help="Only rewrite the seed (-k seed exploits), no taxonomy sweep. Env: TAX_SEED_ONLY.")
 @click.option("--no-seed", is_flag=True, default=None,
               help="Skip the seed and start from the sweep (not with --seed-only / --seed-para-reps). "
                    "Env: TAX_NO_SEED.")
 @click.option("--sweep-before-seed-para", is_flag=True, default=None,
-              help="Run the sweep before the seed paraphrases. Env: TAX_SWEEP_BEFORE_SEEDPARA.")
+              help="Run the sweep before the seed exploits. Env: TAX_SWEEP_BEFORE_SEEDPARA.")
 @click.option("--seed-source", type=click.Choice(["benchmark", "agentdojo"]), default=None,
               help="Which built-in fixed seed to use: the benchmark's own default [default], or AgentDojo's "
                    "important_instructions seed reused on any benchmark. Env: TAX_SEED_SOURCE.")
@@ -124,7 +124,7 @@ def main() -> None:
               help="Use the fixed seed read from this file (must contain <task_goes_here>); overrides "
                    "--seed-source. For a benchmark that ships no seed (e.g. IPI Arena). Env: TAX_SEED_FILE.")
 @click.option("--techniques", default=None,
-              help="Sweep only these taxonomy ids, comma-separated: families (F2), techniques (F2.T5), "
+              help="Sweep only these taxonomy ids, comma-separated: classes (F2), techniques (F2.T5), "
                    "or sub-techniques (F2.T5.S2). Env: TAX_TECHNIQUES.")
 @click.option("--max-sequences", default=None, type=int,
               help="Sweep only the first N sub-techniques of the sweep order. Env: TAX_MAX_SEQUENCES.")
@@ -133,10 +133,10 @@ def main() -> None:
 @click.option("--order-seed", default=None, type=int,
               help="Seed of the random sweep order [default: 0]. Env: TAX_ORDER_SEED.")
 @click.option("--stack-only", default=None, type=int,
-              help="Sweep only the N-way combinations of the pool (1 = singles of the pool). Env: TAX_STACK_ONLY.")
+              help="Restrict the sweep to an Ln sweep of the pool with n = N, one line per set of N sub-techniques (1 = an L1 sweep of the pool). Env: TAX_STACK_ONLY.")
 @click.option("--stack-random", is_flag=True, default=None,
-              help="Draw the stacking pool at random instead of the first --stack-pool. Env: TAX_STACK_RANDOM.")
-@click.option("--stack-seed", default=None, type=int, help="Seed of the random stacking pool. Env: TAX_STACK_SEED.")
+              help="Draw the Ln-sweep pool at random instead of taking the first --stack-pool sub-techniques. Env: TAX_STACK_RANDOM.")
+@click.option("--stack-seed", default=None, type=int, help="Seed of the random Ln-sweep pool. Env: TAX_STACK_SEED.")
 @click.option("--no-early-stop", is_flag=True,
               help="Keep attacking a data point after a success, through the rest of its schedule (the "
                    "budget, or earlier if the schedule ends first). The log then lists every success "
@@ -173,8 +173,8 @@ def main() -> None:
 @click.option("--limit", default=None, type=click.IntRange(1), help="Attack only the first N data points (smoke tests).")
 @click.option("--shard", default=0, type=int, help="This worker's shard index (0-based) for parallel sharded runs.")
 @click.option("--num-shards", default=1, type=int, help="Total number of shards; this worker takes points [shard::num-shards].")
-@click.option("--resume", is_flag=True, help="Skip data points whose per-pair log already exists (resume an interrupted run).")
-@click.option("--logdir", default=None, help="Directory for per-pair refiner_logs JSON.")
+@click.option("--resume", is_flag=True, help="Skip scenarios whose log already exists (resume an interrupted run).")
+@click.option("--logdir", default=None, help="Output directory: the run manifest, one JSON log per scenario under refiner_logs/, and traces.")
 def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_tasks, benchmark_version,
         defense, paraphrase_reps, stack_depth, stack_pool, seed_para_reps, seed_only, no_seed,
         sweep_before_seed_para, seed_source, seed_file, techniques, max_sequences, order, order_seed, stack_only, stack_random,
@@ -201,7 +201,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     if num_shards < 1 or not 0 <= shard < num_shards:
         raise click.UsageError("--num-shards must be positive and 0 <= --shard < --num-shards")
     if resume and not logdir:
-        raise click.UsageError("--resume reads each scenario's per-pair log, so it needs --logdir")
+        raise click.UsageError("--resume reads each scenario's log, so it needs --logdir")
     if benchmark == "ipiarena" and (defense or benchmark_version or (injection_tasks and set(injection_tasks) != {"ipi"})):
         raise click.UsageError("IPI Arena uses scenario ids via --user-task and its own scoring; AgentDojo defense/version/task options do not apply")
     if benchmark == "ipiarena":
@@ -239,7 +239,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         elif no_seed is None:
             no_seed = os.environ.get("TAX_NO_SEED", "0") != "0"
         if no_seed and (seed_only or seed_para_reps > 0):
-            raise ValueError("--no-seed leaves no seed to paraphrase: drop --seed-only / --seed-para-reps")
+            raise ValueError("--no-seed leaves no seed to rewrite: drop --seed-only / --seed-para-reps")
         refiner = refiner or target
         catalog = load_model_catalog(models_config)
         target_endpoint = resolve_endpoint(target, catalog)

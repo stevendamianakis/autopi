@@ -31,7 +31,7 @@ Settings that change what a run measures:
   files. Which ``ipi_arena_bench`` package is installed also matters: copies differ in how
   they convert prefilled conversations (README, "IPI Arena").
 
-The transcript handed to the engine's diagnostic judge and context blending holds the
+The transcript handed to AutoPI's judge and context blending holds the
 scenario's prefilled history, marked ``prefilled`` so the judge does not take it for the
 agent's words, and every step of the agent's turn: what it wrote, its tool calls, and the
 simulated tool results, marked ``simulated`` so that context blending reads only the

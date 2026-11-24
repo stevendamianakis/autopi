@@ -1,6 +1,6 @@
 """Generic driver loop — ties a :class:`TaxonomyEngine` to any :class:`BenchmarkAdapter`.
 
-For each data point it runs: reset → (seed, then sweep/paraphrase) attempts until the
+For each data point it runs: reset → (seed, sweep and exploit) attempts until the
 injection succeeds or the attempt budget is exhausted, following the
 contract (``build_injection`` → ``observe`` → ``mark_*`` → ``refine_template``), and writes
 the same per-pair ``refiner_logs`` JSON. It returns per-point outcomes and an ASR summary.
@@ -98,8 +98,8 @@ class RunSummary:
 
     @property
     def covered_subtechniques(self) -> set[str]:
-        """Sub-techniques with at least one success on at least one point (a paraphrase
-        counts toward the line it reworks; a stacked line credits each of its parts)."""
+        """Sub-techniques with at least one success on at least one point (an exploit variant
+        counts toward the line it refines; a line of an Ln sweep credits each of its sub-techniques)."""
         return {sid for o in self.outcomes for src in o.solved_sources if src != "SEED" for sid in src.split("+")}
 
     def format(self) -> str:
@@ -169,7 +169,7 @@ def run_attack(
 
     Args:
         adapter: the benchmark backend.
-        engine: a configured :class:`TaxonomyEngine` (mode, stacking, mechanisms, refiner).
+        engine: a configured :class:`TaxonomyEngine` (mode, Ln sweeps, mechanisms, generator).
         logdir: where to write per-pair ``refiner_logs`` JSON (None disables logging).
         max_attempts: optional hard cap on target calls per point (on top of the engine's
             own schedule budget, ``engine.attempt_budget``). For the paper's L1 setting the

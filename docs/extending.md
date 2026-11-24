@@ -57,8 +57,9 @@ and implement `_query(prompt)`; it receives no benchmark objects.
 ## Taxonomies
 
 `--taxonomy-path` accepts a JSON object containing
-`taxonomy.families[].techniques[].subtechniques[]`. Families, techniques and
-sub-techniques have unique uppercase ids and names. Definitions, examples and a
+`taxonomy.families[].techniques[].subtechniques[]`. Its three levels are the
+paper's classes (called families in the file), techniques and sub-techniques, and
+each unit has a unique uppercase id and a name. Definitions, examples and a
 technique's phrasing signature supply the generator prompt. See the bundled
 `src/autopi/core/data/piatlas_taxonomy.json` for the complete schema.
 

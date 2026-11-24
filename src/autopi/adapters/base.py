@@ -12,7 +12,7 @@ The contract is deliberately tiny — four things:
 3. each point carries ``user_task_prompt`` (for modes 2/3) and ``injection_goal`` (for mode
    3 and the judge).
 4. ``checker_kind`` — whether (utility, security) come from programmatic state checks
-   (AgentDojo) or an LLM judge (IPI Arena); informational, for reporting.
+   (AgentDojo) or an LLM scoring judge (IPI Arena's); informational, for reporting.
 
 AgentDojo implements this over their stateful multi-step environment and
 state-based checkers; IPI Arena implements it as a single ``{fill}`` placement, one target

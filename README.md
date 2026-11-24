@@ -84,7 +84,8 @@ AgentDojo's prompted text format instead, for a server without a tool-call parse
 
 Add `--dry-run` to check the settings and count the scenarios without calling a model. A run with
 `--logdir` writes its resolved settings (a run manifest) and every attempt of every scenario to that
-folder. In the code, the generator is called the refiner.
+folder. Some code names differ from the paper's terms: the generator, for example, is chosen with
+`--refiner`. The [glossary](docs/glossary.md) maps each code name to the paper's term.
 
 <details>
 <summary><b>Hosted models and per-role settings</b></summary>
@@ -134,9 +135,10 @@ without a seed block.
 <summary><b>More options</b></summary>
 <br>
 
-- `--mode 3`, the default and the paper's setting, shows the generator the user task and the injection
-  goal. Modes 1 and 2 write goal-blind templates, and mode 2 also sees the user task. Their judge
-  feedback includes only a fixed failure category, keeping the goal out of the explanation.
+- `--mode 3`, the default and the paper's scenario-aware setting, shows the generator the user task and
+  the injection goal. Modes 1 and 2, which the paper does not use, write goal-blind templates with a slot
+  for the goal, and mode 2 also sees the user task. Their judge feedback includes only a fixed failure
+  category, keeping the goal out of the explanation.
 - `--no-judge`, `--no-context` and `--no-legitimize` switch off one of the three adaptive mechanisms.
 - `--seed-file` uses another seed, and `--no-seed` opens with the sweep.
 - `--taxonomy-path` sweeps another taxonomy with the same file layout.
@@ -162,8 +164,8 @@ A strategy is an ordered list of blocks, an attempt budget per scenario and a st
 
 | File | Blocks | Attempts | Goal |
 |---|---|---:|---|
-| `full.yaml` | seed, L1 sweep, 3 variants of each failed line | 529 | coverage |
-| `seed-exploit.yaml` | seed, 600 variants of the seed | 601 | ASR with a strong seed |
+| `full.yaml` | seed, L1 sweep, 3 variants of each failed sweep line | 529 | coverage |
+| `seed-exploit.yaml` | seed, 600 rewrites of the seed | 601 | ASR with a strong seed |
 | `l1.yaml` | seed, L1 sweep | 133 | low cost |
 | `repeated-phases.yaml` | seed and sweep blocks, repeated and reordered | ≤75 (budget 80) | illustration |
 
@@ -224,7 +226,7 @@ class MyBenchmark:
 | `src/autopi/` | The engine: strategies, generator and judge prompts, seeds, taxonomy, model clients, adapters and the run harness |
 | `configs/` | The strategy files and an example model configuration |
 | `benchmarks/` | The AgentDojo and IPI Arena sources AutoPI runs on, with their licenses. [THIRD_PARTY.md](THIRD_PARTY.md) lists the upstream revisions and the few local changes |
-| `docs/` | [Strategies](docs/strategies.md), [models](docs/models.md), [extending](docs/extending.md), [release notes](docs/release-notes.md) and [validation](docs/validation.md) |
+| `docs/` | [Strategies](docs/strategies.md), [models](docs/models.md), [extending](docs/extending.md), [release notes](docs/release-notes.md), [validation](docs/validation.md) and a [glossary](docs/glossary.md) of code names and paper terms |
 | `tests/` | Tests of the engine |
 | `examples/` | An example script that runs both benchmarks |
 | `scripts/` | A launcher for a local vLLM server |
@@ -264,7 +266,7 @@ the paper, use the settings it lists instead.
 | Version and defense (AgentDojo) | v1.2.2, no defense | v1.2.2, no defense | `--benchmark-version`, `--defense` |
 | Scoring judge (IPI Arena) | IPI Arena's default model, `google/gemini-2.5-flash` | The target | `--judge` |
 | Tool simulator (IPI Arena) | The scoring judge, as in IPI Arena | The scoring judge | `--worldsim` |
-| Generator and diagnostic judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--refiner` alias |
+| Generator and judge | AutoPI's defaults, since their sampling is part of the method | Temperature 0.7, 1,024 output tokens | `temperature` and `max_tokens` in the `--refiner` alias |
 
 - A model alias's `temperature`, `top_p` and `max_tokens` shape the target's and the generator's
   requests. On IPI Arena the scoring judge and the tool simulator keep the benchmark's own per-call
@@ -299,8 +301,8 @@ credentials, server addresses or experiment outputs.
 Two runs with the same models, versions and settings can give different results. Judge a difference
 between runs against this variation.
 
-- The generator and its diagnostic judge sample, at temperature 0.7 unless the `--refiner` alias
-  sets another value, so each run can write different injections. Anthropic generators use the
+- The generator and the judge, which shares its endpoint, sample at temperature 0.7 unless the
+  generator's `--refiner` alias sets another value, so each run can write different injections. Anthropic generators use the
   API's default sampling.
 - Temperature 0 does not make a self-hosted target deterministic. Server load changes the batch a
   request is computed in, which changes the order in which the GPU adds numbers, so the same
@@ -316,8 +318,9 @@ between runs against this variation.
   by Python's hash seed (set the `PYTHONHASHSEED` environment variable to fix the order), and it
   reruns an agent that ends without a final answer, up to three attempts, keeping the changes the
   earlier attempts made. IPI Arena's scoring judge and its tool simulator, WorldSim, are LLMs.
-- AutoPI's own random choices, a random sweep order or stack pool, use fixed seeds (`order_seed`
-  and `stack_seed`, 0 by default), so they repeat on the same Python version.
+- AutoPI's own random choices, a random sweep order or a random pool of sub-techniques for an Ln
+  sweep, use fixed seeds (`order_seed` and `stack_seed`, 0 by default), so they repeat on the same
+  Python version.
 
 Report how many runs you made and their confidence intervals (for example 95% Wilson intervals for
 ASR), and compare methods on the same scenarios with a paired test such as McNemar's.

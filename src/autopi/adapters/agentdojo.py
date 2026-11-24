@@ -318,7 +318,7 @@ def _classify_infra_error(e: BaseException) -> str | None:
     if isinstance(e, json.JSONDecodeError):
         # A native tool call whose JSON arguments were cut off (e.g. a token cap) fails
         # AgentDojo's own parser. Treat it as a model crash, not a blocked attack: count it
-        # against the budget and keep it out of the refiner's failed-template history.
+        # against the budget and keep it out of the generator's history of failed lines.
         return "model_crash"
     if type(e).__name__ == "ValidationError" and getattr(e, "title", None) == "FunctionCall":
         # Valid JSON arguments that are not an object ([], null, "text", 42): AgentDojo cannot

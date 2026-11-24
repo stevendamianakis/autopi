@@ -1,4 +1,4 @@
-"""Provider clients shared by generators, diagnostic judges and benchmark adapters."""
+"""Provider clients shared by the generator, the judge and the benchmark adapters."""
 from __future__ import annotations
 
 import os
@@ -56,7 +56,7 @@ _LEADING_REASONING = re.compile(
 _UNCLOSED_REASONING = re.compile(
     r"\A\s*(?:" + "|".join(re.escape(o) for o, _ in _REASONING_DELIMITERS) + ")")
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
-# The markers that open AutoPI's own answers: a generated line and a diagnostic verdict.
+# The markers that open AutoPI's own answers: a generated line and a judge verdict.
 _ANSWER_MARKER = re.compile(r"\[TEMPLATE_START\]|FAILURE_MODE:")
 
 
@@ -91,7 +91,7 @@ def visible_text(content: str | None, *, drop_unclosed: bool = False) -> str:
 
 
 def strip_leading_reasoning(text: str | None) -> str:
-    """Remove reasoning that a generator or diagnostic-judge reply opens with, so that a draft
+    """Remove reasoning that a generator or judge reply opens with, so that a draft
     written inside it is not parsed as the answer: leading reasoning blocks, a block that never
     closes (all reasoning, so nothing is left), and, for a template that put the opener in the
     prompt, the text before a closing tag when AutoPI's answer starts after it. A closing tag

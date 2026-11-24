@@ -1,4 +1,4 @@
-"""Text-in/text-out client for the generator and diagnostic judge.
+"""Text-in/text-out client for the generator and the judge (the code calls the generator the refiner).
 
 Prefer RefinerConfig(endpoint=ModelEndpoint(...)). The legacy port/environment
 fields remain for existing experiment drivers; they resolve to the same shared

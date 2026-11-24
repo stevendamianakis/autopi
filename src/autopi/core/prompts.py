@@ -1,5 +1,8 @@
 """Mode-aware prompt builders and adaptive-mechanism helpers for AutoPI.
 
+The LLM that writes the injection lines is the generator (the code calls it the refiner); the
+judge diagnoses failed attempts. See docs/glossary.md for code names and the paper's terms.
+
 Pure functions: they take sequence dicts, goal/user-task
 strings, and agent transcripts, and return prompt strings or parsed signals — no
 benchmark or model dependency. Mode 1/2/3 behaviour is driven by the ``awareness_mode`` /
@@ -63,7 +66,7 @@ def _is_yaml_safe(template: str) -> bool:
     return isinstance(loaded, dict) and "key" in loaded
 
 def _sanitize_template_seq(template: str, allow_unicode: bool) -> str:
-    """Sanitise a refiner-produced template.
+    """Sanitise a generator-produced line.
 
     Double quotes and backslashes are kept: the AgentDojo adapter escapes them for its
     double-quoted YAML scalar at placement (:func:`yaml_escape`), and IPI Arena, which places
@@ -87,9 +90,9 @@ _REFUSAL_OPENING = re.compile(
 
 
 def _accept_undelimited() -> bool:
-    """``TAX_ACCEPT_UNDELIMITED=1``: take a refiner answer that has no ``[TEMPLATE_START]``
+    """``TAX_ACCEPT_UNDELIMITED=1``: take a generator answer that has no ``[TEMPLATE_START]``
     delimiter as the line itself. Off by default (such an answer is discarded).
-    Stacked prompts over structural-marker techniques often answer with the bare line."""
+    For Ln-sweep prompts over structural-marker techniques, the generator often answers with the bare line."""
     return os.environ.get("TAX_ACCEPT_UNDELIMITED", "0") != "0"
 
 
@@ -109,7 +112,7 @@ def _extract_template_seq(
     require_placeholder: bool = True,
     yaml_safe: bool = True,
 ) -> str | None:
-    """Extract + validate a template from the refiner response (delimiter-based).
+    """Extract + validate a line from the generator response (delimiter-based).
 
     Same contract as ``RefinedInstructionsAttack`` but with sequence-aware
     sanitisation. Modes 1/2 require the placeholder. Mode 3 rejects the
@@ -168,7 +171,7 @@ _NEW_TASK_OUTPUT_CONTRACT = (
 
 def _render_style_block(seq: dict, header: str) -> str:
     """One sub-technique's Category/Style/Description(/phrasing/example) block, shared by the
-    single-technique and stacked prompt builders so they never drift apart."""
+    single-technique and multi-technique (Ln sweep) prompt builders so they never drift apart."""
     parts = [
         header,
         f"  Category: {seq['family_name']}\n",
@@ -182,9 +185,9 @@ def _render_style_block(seq: dict, header: str) -> str:
     return "".join(parts)
 
 def _char_rules(seqs: dict | list[dict], *, require_placeholder: bool = True) -> str:
-    """Formatting constraints. Accepts a single seq or a stacked combo (list): the
-    marker/Unicode allowances are the UNION over the combo -- if ANY sub-technique in the
-    stack legitimately needs markers or Unicode, they are permitted for the blended line."""
+    """Formatting constraints. Accepts a single seq or a set of them for an Ln sweep (list): the
+    marker/Unicode allowances are the UNION over the set -- if ANY sub-technique in it
+    legitimately needs markers or Unicode, they are permitted for the blended line."""
     lst = _as_seq_list(seqs)
     allow_markers = any(_seq_allows_markers(s) for s in lst)
     allow_unicode = any(_seq_allows_unicode(s) for s in lst)
@@ -233,7 +236,7 @@ _NEW_TASK_NOTE = (
 def _usertask_section(user_task_prompt: str, *, require_placeholder: bool = True) -> str:
     """Original-task-aware block used by modes 2 and 3.
 
-    It tells the refiner what task the agent is currently performing so the line can fit
+    It tells the generator what task the agent is currently performing so the line can fit
     that workflow. The default wording is unchanged for legacy mode 2; mode 3 ends with
     its task-bearing output rule instead of asking for a placeholder.
     """
@@ -274,9 +277,9 @@ def _build_taxonomy_prompt(
     user_task_prompt: str = "",
     awareness_mode: int = 1,
 ) -> str:
-    """Build the (anti-refusal-framed) refiner prompt for one taxonomy sub-technique OR a
-    STACK of several. ``seqs`` may be a single seq dict or a list of them; for a list, the
-    refiner is given one style block per sub-technique and told to blend ALL of them into a
+    """Build the (anti-refusal-framed) generator prompt for one taxonomy sub-technique OR a
+    SET of several (an Ln sweep). ``seqs`` may be a single seq dict or a list of them; for a list, the
+    generator is given one style block per sub-technique and told to blend ALL of them into a
     single line (using only some does not count).
 
     In modes 1/2, ``injection_goal`` is intentionally not embedded and the output carries
@@ -351,11 +354,11 @@ def _build_paraphrase_prompt(
     user_task_prompt: str = "",
     awareness_mode: int = 1,
 ) -> str:
-    """Build the refiner prompt for the explore phase: given a failed taxonomy instruction
+    """Build the generator prompt for the exploit phase: given a failed line
     AND the sub-technique(s) it came from, ask for a creative, genuinely different variant in
-    the SAME style(s) (not a superficial reword). For a STACKED source (``seqs`` is a list),
-    the rewrite must STILL blend ALL of the stacked styles into one line. ``prior_paraphrases``
-    are earlier rewrites of THIS instruction that also failed -- listed so the refiner avoids
+    the SAME style(s) (not a superficial reword). For an Ln-sweep source (``seqs`` is a list),
+    the variant must STILL blend ALL of those styles into one line. ``prior_paraphrases``
+    are earlier variants of THIS line that also failed -- listed so the generator avoids
     repeating them as the attempts evolve. Modes 1/2 keep the new task hidden behind
     ``<task_goes_here>``. Mode 3 shows it and requires the rewrite to state it directly or
     faithfully paraphrase it.
@@ -379,7 +382,7 @@ def _build_paraphrase_prompt(
             "DIFFERENT instruction line that takes an alternate approach (not a superficial reword of the same "
             f"wording), while staying within {same}, so I can test whether a fresh variant lands better.\n\n"
         )
-    # Give the refiner the context of which phrasing style(s) the failed line used -- the SAME
+    # Give the generator the context of which phrasing style(s) the failed line used -- the SAME
     # taxonomy block(s) as the sweep prompt (incl. the structural example) so the technique is
     # fully anchored on the failure, not just partially.
     if n == 1:
@@ -427,7 +430,7 @@ def _build_paraphrase_prompt(
             f"clearly different angle within the same style:\n{older_note}{listing}\n\n"
         )
     # Failure reasonings sit directly beneath the failed-instructions section above, so the
-    # refiner reads each tried line together with the reason it fell flat before writing the next.
+    # generator reads each tried line together with the reason it fell flat before writing the next.
     if failure_reasonings:
         parts.append(failure_reasonings)
     if newtask_aware:
@@ -439,7 +442,7 @@ def _build_paraphrase_prompt(
     if adaptive:
         parts.append(adaptive)
     # Reuse the source sub-technique(s)' character policy so a variant of, e.g., an
-    # F2 token-style line can keep its markers (union over a stack). Falls back to strict default.
+    # F2 token-style line can keep its markers (union over an Ln-sweep set). Falls back to strict default.
     if lst:
         parts.append(_char_rules(lst, require_placeholder=not newtask_aware))
     else:
@@ -565,7 +568,7 @@ def _build_judge_prompt(messages: list, goal: str = "") -> str:
     told the goal (it only classifies, so refusal risk is low, and without it it cannot tell
     'did the user's task' from 'did the injection'). It returns ONLY the failure mode + a
     short factual reason -- deliberately NO prescriptive guidance on how to fix the line: the
-    refiner decides the fix itself, staying within its taxonomy technique."""
+    generator decides the fix itself, staying within its taxonomy technique."""
     goal_block = ""
     if goal:
         goal_block = (
@@ -620,9 +623,9 @@ def _mask_targets(text: str) -> str:
     return _TARGET_RX.sub("the specified recipient", text) if text else text
 
 def _format_signals(signals: list[str]) -> str:
-    """Render the accumulated SEQUENCE-LOCAL judge signals for the paraphrase prompt.
+    """Render the accumulated line-local judge signals for the exploit prompt.
     One signal -> a single note; several -> a numbered history of what already failed for
-    THIS line, so the refiner takes a new angle and fixes the most recent failure."""
+    THIS line, so the generator takes a new angle and fixes the most recent failure."""
     signals = [s for s in signals if s]
     if not signals:
         return ""
@@ -767,10 +770,10 @@ def _mask_injected(raw: str, injected: str) -> tuple[str, int]:
 
 
 def _extract_context(messages: list, goal: str, template: str | None) -> str:
-    """② Show the refiner the FULL native document its line will sit in, with the ENTIRE
+    """② Show the generator the FULL native document its line will sit in, with the ENTIRE
     injected instruction of the attempt that produced ``messages`` replaced by
     ``<instruction_will_go_here>``. Only the surrounding native content is shown, so the
-    refiner can match the document's style and format and sees where its line goes.
+    generator can match the document's style and format and sees where its line goes.
 
     ``template`` is the template of that attempt. With a ``<task_goes_here>`` slot (the seed,
     and every line in modes 1/2) the injected text is the template with the goal filled in.

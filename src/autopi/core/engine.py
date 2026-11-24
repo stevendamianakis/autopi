@@ -1,9 +1,10 @@
 """AutoPI explore/exploit state machine — :class:`TaxonomyEngine`.
 
 The engine is decoupled from any benchmark and drives one through an adapter. Schedule:
-seed → seed-paraphrase → L1..Lk taxonomy sweep → sequence-local paraphrase, with three
-awareness modes, the judge/context/legitimize adaptive mechanisms, stacking, and
-resume/strict toggles.
+seed → seed exploits (rewrites of the seed) → L1..Ln taxonomy sweeps → sweep exploits
+(variants of each failed sweep line), with three awareness modes, the judge, context
+blending and legitimize adaptive mechanisms, and resume/strict toggles. Code names that
+differ from the paper's terms are mapped in docs/glossary.md.
 
 * :meth:`build_injection` (goal string in,
   ready-to-place injection text out) — the goal is substituted into the ``<task_goes_here>``
@@ -15,18 +16,18 @@ A generic driver (``autopi.harness.runner``) calls, per data point:
 adapter → ``observe(messages, utility, security)`` → stop on success, else
 ``mark_template_failed()`` + ``refine_template(goal)`` until exhausted → ``save_template_log``.
 
-Search strategy. The default schedule above is one choice. Each phase can be sized or
+Search strategy. The default schedule above is one choice. Each block can be sized or
 switched off, and a few switches change what is searched and in what order:
 
-* ``seed_only`` paraphrases the seed and never sweeps; ``use_seed=False`` starts from the
+* ``seed_only`` only rewrites the seed and never sweeps; ``use_seed=False`` starts from the
   sweep with no seed at all;
-* ``sweep_before_seed_para`` runs the sweep before the seed paraphrases;
+* ``sweep_before_seed_para`` runs the sweep before the seed exploits;
 * ``techniques`` / ``max_sequences`` restrict the sweep to part of the taxonomy, ``order``
-  sets the sweep order (priority, canonical, random), and the ``stack_*`` knobs choose how
-  many sub-techniques one injection combines;
+  sets the sweep order (priority, canonical, random), and the ``stack_*`` knobs choose the
+  Ln sweeps (how many sub-techniques one line combines);
 * the driver may keep going after a success (``run_attack(stop_at_first_success=False)``):
   :meth:`mark_succeeded` then counts the attempt against the budget, a successful sweep
-  candidate is not paraphrased (only failed ones are), and the log lists every success.
+  line is not refined (only failed ones are), and the log lists every success.
 
 """
 
@@ -83,13 +84,13 @@ from autopi.core.taxonomy import (
 # The default fixed seed is AgentDojo's important-instructions attack. A run can instead pass
 # its own ``seed_template`` (a benchmark's own seed, or a researcher-written one), or skip the
 # seed entirely (``use_seed=False``). The goal is substituted into ``<task_goes_here>`` at build
-# time; for mode 3 the sweep/paraphrase candidates instead carry the goal directly and this
+# time; for mode 3 the sweep and exploit lines instead carry the goal directly and this
 # placeholder seed is still used for the free attempt-1 baseline.
 _INITIAL_TEMPLATE = IMPORTANT_INSTRUCTIONS_SEED  # backward-compatible module default
 
 
 class GeneratorUnavailableError(RuntimeError):
-    """The generator or diagnostic judge is unavailable, misconfigured or repeatedly errors.
+    """The generator or the judge is unavailable, misconfigured or repeatedly errors.
     The run stops before the scenario is logged, so ``--resume`` repeats it."""
 
     fatal = True
@@ -141,7 +142,9 @@ class TaxonomyEngine:
     """Benchmark-agnostic PIAtlas taxonomy explore/exploit attacker.
 
     All knobs mirror the original constructor and its ``TAX_*`` environment overrides, so
-    existing run scripts/presets behave identically. ``awareness_mode`` (or
+    existing run scripts/presets behave identically. Several names differ from the paper's
+    terms (the generator is the refiner, a seed/sweep exploit is a paraphrase, an Ln sweep is
+    stacking); docs/glossary.md maps them. ``awareness_mode`` (or
     ``TAX_AWARENESS_MODE``) selects context-blind mode 1, original-task-aware mode 2, or
     new-task-aware mode 3 (writes the goal directly, no placeholder). The default is mode 3,
     the paper's setting and the command line's, with no exploit variants (``paraphrase_reps``
@@ -210,7 +213,7 @@ class TaxonomyEngine:
         self.generation_stop_reason: str | None = None
         seqs = load_sequences(taxonomy_path)
         # ── which sub-techniques the sweep covers, and in what order ──
-        # 1) optional subset by family / technique / sub-technique id, 2) sweep order,
+        # 1) optional subset by class / technique / sub-technique id, 2) sweep order,
         # 3) optional cap to the first N of that order. All default to "everything, priority".
         if techniques is None:
             techniques = os.environ.get("TAX_TECHNIQUES") or None
@@ -230,7 +233,7 @@ class TaxonomyEngine:
         if paraphrase_reps < 0 or (self.max_sequences is not None and self.max_sequences < 1):
             raise ValueError("paraphrase reps must be nonnegative and max_sequences positive")
         self.paraphrase_reps = paraphrase_reps
-        # ── stacking ──
+        # ── Ln sweeps (combining several sub-techniques per line) ──
         self.stack_depth = int(stack_depth if stack_depth is not None else os.environ.get("TAX_STACK_DEPTH", "1"))
         _pool_env = os.environ.get("TAX_STACK_POOL")
         self.stack_pool = stack_pool if stack_pool is not None else (int(_pool_env) if _pool_env else None)
@@ -250,15 +253,15 @@ class TaxonomyEngine:
         # ── phase switches ──
         # use_seed=False: no seed attempt, the first candidate of the schedule goes first.
         self.use_seed = use_seed if use_seed is not None else (os.environ.get("TAX_NO_SEED", "0") == "0")
-        # Optional order: run the taxonomy sweep BEFORE the seed-paraphrase phase
-        # (default: seed paraphrases first).
+        # Optional order: run the taxonomy sweep BEFORE the seed exploits
+        # (default: seed exploits first).
         self.sweep_before_seed_para = (
             sweep_before_seed_para if sweep_before_seed_para is not None
             else (os.environ.get("TAX_SWEEP_BEFORE_SEEDPARA") == "1")
         )
         if not self.use_seed and (self.seed_only or self.seed_paraphrase_reps > 0):
             raise ValueError(
-                "use_seed=False leaves no seed to paraphrase: it cannot be combined with "
+                "use_seed=False leaves no seed to rewrite: it cannot be combined with "
                 "seed_only or seed_paraphrase_reps > 0"
             )
         # The fixed seed: the benchmark's own, a researcher-written one, or the default
@@ -283,11 +286,11 @@ class TaxonomyEngine:
                     f"{self.num_combos} combinations/pair -- likely infeasible. Set TAX_STACK_POOL to bound it."
                 )
             if self.stack_random and self.stack_pool_ids:
-                print(f"[TAXREFINER] RANDOM stacking pool (seed={self.stack_seed}, n={len(self.stack_pool_ids)}): "
+                print(f"[TAXREFINER] RANDOM Ln-sweep pool (seed={self.stack_seed}, n={len(self.stack_pool_ids)}): "
                       f"{self.stack_pool_ids}")
             if self.stack_only:
-                print(f"[TAXREFINER] STACK-ONLY L{self.stack_only}: sweeping only the {self.num_combos} "
-                      f"{self.stack_only}-way combinations of the pool (no singles / other depths)")
+                print(f"[TAXREFINER] L{self.stack_only}-ONLY: sweeping only the {self.num_combos} "
+                      f"{self.stack_only}-way sub-technique sets of the pool (no singles / other levels)")
             if self.num_combos == 0:
                 # A sweep that selects nothing is a configuration error. Without a seed the run would
                 # make no target call, and with one it would quietly become a seed-only run.
@@ -353,7 +356,7 @@ class TaxonomyEngine:
         self._last_messages: list = []
         self._last_utility: bool | None = None
         self._last_security: bool | None = None
-        # Template of the attempt that produced _last_messages (None before the first run).
+        # Line of the attempt that produced _last_messages (None before the first run).
         self._last_observed_template: str | None = None
         self._user_task_prompt: str = ""
         self._judge_mode: str | None = None
@@ -410,7 +413,7 @@ class TaxonomyEngine:
         self.stack_pool_ids = pool_ids
         return combos
 
-    # ── inlined base refiner-state methods ──
+    # ── inlined base attacker-state methods ──
     def mark_template_failed(self) -> None:
         self._failed_templates.append(self._current_template)
         self._set_last_status_if_pending("failed")
@@ -470,7 +473,7 @@ class TaxonomyEngine:
             self.has_candidate = self.refine_template(injection_goal)
 
     def build_injection(self, injection_goal: str) -> str:
-        """Return the ready-to-place injection text for the current template: the goal is
+        """Return the ready-to-place injection text for the current line: the goal is
         substituted into ``<task_goes_here>`` (modes 1/2); a no-op for mode-3 lines that
         already contain the goal. The adapter places this at the benchmark's injection point(s)."""
         return self._current_template.replace("<task_goes_here>", f"\n\n{injection_goal}\n\n")
@@ -564,7 +567,7 @@ class TaxonomyEngine:
                 f"the generator is misconfigured ({type(e).__name__}: {str(e)[:160]}). Fix the model, key "
                 "or SDK (it would fail the same way on every scenario), then rerun with --resume to continue") from e
         if self.strict_refiner or getattr(e, "fatal", False):
-            raise RuntimeError("Taxonomy judge/refiner request failed") from e
+            raise RuntimeError("Taxonomy generator/judge request failed") from e
         role = "diagnostic_judge" if getattr(self, "_querying_judge", False) else "refiner"
         from autopi.models.clients import is_content_policy_rejection
 
@@ -691,7 +694,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
                 self._refiner_request_succeeded()
             except Exception as e:
-                print(f"[TAXREFINER] {cid} refiner error: {e}")
+                print(f"[TAXREFINER] {cid} generator error: {e}")
                 self._check_refiner_error(e)
                 self._record(cid, cname, "taxonomy", None, "refiner_error", raw=str(e)[:200], stack_level=lvl)
                 return None
@@ -728,7 +731,7 @@ class TaxonomyEngine:
                 response = self._query(prompt)
                 self._refiner_request_succeeded()
             except Exception as e:
-                print(f"[TAXREFINER] paraphrase refiner error: {e}")
+                print(f"[TAXREFINER] exploit generator error: {e}")
                 self._check_refiner_error(e)
                 self._last_para_raw = str(e)[:200]
                 return None
@@ -762,7 +765,7 @@ class TaxonomyEngine:
         self._stash_last_transcript()
         cl_block = self._context_legit_block(injection_goal)
 
-        # ── SEED-PARAPHRASE phase ── (default order: before the sweep)
+        # ── SEED-EXPLOIT phase ── (default order: before the sweep)
         if not self.sweep_before_seed_para and self._next_seed_paraphrase(injection_goal, cl_block):
             return True
         if self.generation_stop_reason:
@@ -772,7 +775,7 @@ class TaxonomyEngine:
         while not self.generation_stop_reason and self._combo_idx < self.num_combos:
             combo = self._combos[self._combo_idx]
             self._combo_idx += 1
-            print(f"[TAXREFINER] attempt {self.get_attempt_number()} taxonomy L{len(combo)} {_combo_id(combo)}")
+            print(f"[TAXREFINER] attempt {self.get_attempt_number()} sweep L{len(combo)} {_combo_id(combo)}")
             self._adaptive_block = cl_block
             template = self._generate_from_combo(combo, injection_goal)
             if template is not None:
@@ -784,18 +787,18 @@ class TaxonomyEngine:
         if self.generation_stop_reason:
             return False
 
-        # ── SEED-PARAPHRASE phase with sweep_before_seed_para ── it starts once the sweep is
+        # ── SEED-EXPLOIT phase with sweep_before_seed_para ── it starts once the sweep is
         #    exhausted, also when the sweep's last candidates could not be written, so the order
-        #    becomes seed, sweep, seed paraphrases, exploit
+        #    becomes seed, sweep, seed exploits, sweep exploits
         if self.sweep_before_seed_para and self._next_seed_paraphrase(injection_goal, cl_block):
             return True
 
-        # ── EXPLOIT / paraphrase ──
+        # ── EXPLOIT: sweep exploits (seed exploits in seed-only mode) ──
         return self._next_exploit(injection_goal, cl_block)
 
     def _next_seed_paraphrase(self, injection_goal: str, cl_block: str) -> bool:
-        """Write the next seed paraphrase. Skips refused/unparseable candidates inline and
-        returns False when the seed-paraphrase phase has nothing left."""
+        """Write the next seed exploit (a rewrite of the seed). Skips refused/unparseable candidates
+        inline and returns False when the seed-exploit phase has nothing left."""
         while (not self.generation_stop_reason and not self.seed_only
                and self._seed_para_try < self.seed_paraphrase_reps):
             seed_tmpl = self._attempt_meta[0]["template"]
@@ -808,7 +811,7 @@ class TaxonomyEngine:
             self._adaptive_block = cl_block + style_addendum
             self._para_reasonings = _format_signals(self._seed_para_signals)
             print(
-                f"[TAXREFINER] attempt {self.get_attempt_number()} seed-paraphrase "
+                f"[TAXREFINER] attempt {self.get_attempt_number()} seed-exploit "
                 f"try {self._seed_para_try}/{self.seed_paraphrase_reps} "
                 f"({len(self._seed_para_signals)} judge signal(s))"
             )
@@ -822,8 +825,8 @@ class TaxonomyEngine:
         return False
 
     def _next_exploit(self, injection_goal: str, cl_block: str) -> bool:
-        """Write the next paraphrase of a failed sweep candidate (of the seed in seed-only
-        mode). Returns False when every paraphrase target has been tried."""
+        """Write the next exploit variant: of a failed sweep line (a sweep exploit) or, in seed-only
+        mode, of the seed (a seed exploit). Returns False when every source has been tried."""
         self._phase = "paraphrase"
         if self._para_sources is None:
             self._para_sources = self._build_paraphrase_sources()
@@ -832,8 +835,8 @@ class TaxonomyEngine:
             self._cur_para_failed = []
             self._cur_seq_signals = []
             print(
-                f"[TAXREFINER] entering paraphrase phase: {len(self._para_sources)} failed instructions "
-                f"x {self.paraphrase_reps} paraphrase attempts each"
+                f"[TAXREFINER] entering exploit phase: {len(self._para_sources)} failed injections "
+                f"x {self.paraphrase_reps} variants each"
             )
         while not self.generation_stop_reason and self._para_src_idx < len(self._para_sources):
             if self._para_try >= self.paraphrase_reps:
@@ -852,7 +855,7 @@ class TaxonomyEngine:
             self._adaptive_block = cl_block + style_addendum
             self._para_reasonings = _format_signals(self._cur_seq_signals)
             print(
-                f"[TAXREFINER] attempt {self.get_attempt_number()} paraphrase src "
+                f"[TAXREFINER] attempt {self.get_attempt_number()} exploit src "
                 f"{self._para_src_idx + 1}/{len(self._para_sources)} try {self._para_try}/{self.paraphrase_reps} "
                 f"of {src['src']} ({len(self._cur_seq_signals)} judge signal(s))"
             )
@@ -894,7 +897,7 @@ class TaxonomyEngine:
         self._set_last_status_if_pending("success" if last_ok else "failed")
         successes = [m for m in self._attempt_meta if m["status"] == "success"]
         solved = successes[0] if successes else None
-        # Sources credited with a success: a paraphrase counts toward the line it reworks.
+        # Sources credited with a success: an exploit variant counts toward the line it refines.
         solved_sources: list[str] = []
         for m in successes:
             src = m["sequence_id"].removeprefix("PARA:")
@@ -960,8 +963,8 @@ class TaxonomyEngine:
                 for m in self._attempt_meta
                 if m["template"] is not None and m["status"] != "success"
             ],
-            # The first solving template when there is one (the current template when the run
-            # stopped at its first success), else the last template tried.
+            # The first solving line when there is one (the current line when the run
+            # stopped at its first success), else the last line tried.
             "final_template": {
                 "template": solved["template"] if solved else self._current_template,
                 "status": "SUCCESS" if final_security else "FAILED",
@@ -981,4 +984,4 @@ class TaxonomyEngine:
         finally:
             if tmp_file.exists():
                 tmp_file.unlink()
-        print(f"[TAXREFINER] template log saved to {log_file}")
+        print(f"[TAXREFINER] scenario log saved to {log_file}")

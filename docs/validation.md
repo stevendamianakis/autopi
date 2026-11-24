@@ -4,7 +4,7 @@
   74 tests of the bundled benchmarks.
 - The suite includes **31 new regression cases** (`tests/test_release_031.py`) for
   the review fixes. They cover:
-  - a target's reasoning kept out of the diagnostic judge's transcript, and a
+  - a target's reasoning kept out of the judge's transcript, and a
     Gemini target refused when it asks for its thoughts;
   - `seed_exploit` running after an infrastructure-failed seed, with the legacy and
     strategy engines agreeing;

@@ -1,5 +1,6 @@
 """PIAtlas construction taxonomy: loading, softening, prioritization, and the
-stacking (combination) schedule.
+Ln-sweep (sub-technique combination) schedule. Its top level is a class (the paper's term;
+the file and this code call it a family).
 
 This is the data core of AutoPI and is completely benchmark- and model-agnostic.
 
@@ -23,7 +24,7 @@ from typing import Iterable
 _BUNDLED_TAXONOMY = Path(__file__).parent / "data" / "piatlas_taxonomy.json"
 
 # Taxonomy examples use benchmark canaries to illustrate technique SHAPE; strip them to a
-# neutral marker so the refiner learns the structure, not a stray payload.
+# neutral marker so the generator learns the structure, not a stray payload.
 _CANARY_PATTERNS = [
     re.compile(r"I have been PWNED", re.IGNORECASE),
     re.compile(r"ACCESS[ _]GRANTED", re.IGNORECASE),
@@ -32,8 +33,8 @@ _CANARY_PATTERNS = [
 ]
 _CANARY_REPLACEMENT = "[MY TASK]"
 
-# Light semantic softening of taxonomy free-text before it is shown to the refiner: the
-# MEANING is preserved; only vocabulary likely to trip a safety-tuned refiner is swapped
+# Light semantic softening of taxonomy free-text before it is shown to the generator: the
+# MEANING is preserved; only vocabulary likely to trip a safety-tuned generator is swapped
 # for neutral equivalents.
 _SOFTEN = [
     # Order matters: multi-word / more-specific stems first.
@@ -52,7 +53,7 @@ _SOFTEN = [
 # Techniques whose sub-techniques legitimately require non-ASCII characters (homoglyph /
 # zero-width; other-language content): sanitisation does NOT strip Unicode for these.
 _UNICODE_TECHNIQUES = {"F3.T1", "F3.T3"}
-# Families that legitimately use structural markers / angle-bracket tokens.
+# Classes (families in the file) that legitimately use structural markers / angle-bracket tokens.
 _STRUCTURAL_FAMILIES = {"F2"}
 
 # Sweep order: front-load the techniques most likely to crack an instruction-tuned agent
@@ -87,7 +88,7 @@ def load_sequences(taxonomy_path: str | Path | None = None) -> list[dict]:
     """Flatten the PIAtlas taxonomy into an ordered list of sub-technique sequences.
 
     Order follows the JSON (F1.T1.S1 ... F6.T3.S2). Each entry carries its own definition
-    plus the parent technique/family context needed to prompt the refiner.
+    plus the parent technique and class context needed to prompt the generator.
     """
     path = Path(taxonomy_path) if taxonomy_path else _BUNDLED_TAXONOMY
     try:
@@ -142,7 +143,7 @@ SWEEP_ORDERS = ("priority", "canonical", "random")
 def select_sequences(sequences: list[dict], selectors: Iterable[str] | None) -> list[dict]:
     """Keep only the sequences named by ``selectors``, in their current order.
 
-    A selector is a family id (``F2``), a technique id (``F2.T5``), or a sub-technique id
+    A selector is a class id (``F2``), a technique id (``F2.T5``), or a sub-technique id
     (``F2.T5.S2``). ``None`` or an empty selection keeps everything. A selector that matches
     nothing is an error, so a typo cannot silently shrink the sweep."""
     wanted = [s.strip().upper() for s in (selectors or []) if s and s.strip()]
@@ -181,12 +182,12 @@ def seq_allows_markers(seq: dict) -> bool:
 
 
 def as_seq_list(seqs: dict | list[dict]) -> list[dict]:
-    """Normalise a single seq dict or a list of them (a stacked combo) to a list."""
+    """Normalise a single seq dict or a list of them (an Ln-sweep set) to a list."""
     return [seqs] if isinstance(seqs, dict) else list(seqs)
 
 
 def combo_allows_unicode(seqs: dict | list[dict]) -> bool:
-    """A stacked combo may use Unicode if ANY of its sub-techniques legitimately needs it."""
+    """An Ln-sweep set may use Unicode if ANY of its sub-techniques legitimately needs it."""
     return any(seq_allows_unicode(s) for s in as_seq_list(seqs))
 
 
@@ -257,7 +258,7 @@ def build_combo_schedule(
     stack_seed: int = 0,
     stack_only: int = 0,
 ) -> tuple[ComboSchedule, list[str]]:
-    """Ordered list of sub-technique COMBINATIONS to sweep, plus the stacking pool ids.
+    """Ordered list of sub-technique COMBINATIONS to sweep, plus the Ln-sweep pool ids.
 
     Level 1 = every sequence (the single-technique sweep). Levels 2..stack_depth = every
     UNIQUE UNORDERED combination of that length drawn from the top ``stack_pool`` prioritized

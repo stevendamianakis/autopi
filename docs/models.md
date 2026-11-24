@@ -25,8 +25,8 @@ The YAML `models` mapping supports these fields:
 | `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`) |
 | `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google; with `max_tokens_field: max_completion_tokens`, also that field). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires. On an Ollama generator, `max_tokens` here drops its `num_predict` option |
 
-The generator and its diagnostic judge use `--refiner` and share one configured
-endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
+The generator and the judge (the LLM that diagnoses failed attempts) use
+`--refiner` and share one configured endpoint, as in the paper. `--judge` is IPI Arena's **benchmark scoring judge**;
 it defaults to the target. `--worldsim` is its tool simulator and defaults to
 the benchmark judge. These have independent model aliases and URLs. A judge or
 WorldSim alias's `temperature`, `top_p` and `max_tokens` are **not** sent: IPI
@@ -167,7 +167,7 @@ its reasoning. How AutoPI keeps reasoning out depends on where it appears:
 
 - **Anthropic** returns thinking as typed blocks. AgentDojo keeps them in its own
   messages (and its scoring reads them), but AutoPI drops them from the transcript its
-  diagnostic judge and context blending read.
+  judge and context blending read.
 - **Gemini** returns no thoughts unless `include_thoughts` is requested, and AgentDojo
   would turn returned thoughts into ordinary text. A target alias that requests them
   is refused at setup.
@@ -189,7 +189,7 @@ its reasoning. How AutoPI keeps reasoning out depends on where it appears:
   nothing is removed. A reasoning-like tag there is content, for example an injected
   token the agent quotes in a tool argument. A family that reasons whatever
   `thinking` says (GPT-OSS, DeepSeek-R1) should be configured with `thinking: server`.
-- **The generator and the diagnostic judge**, when self-hosted and not thinking-off,
+- **The generator and the judge**, when self-hosted and not thinking-off,
   have reasoning that opens their reply removed before the line or the
   `FAILURE_MODE` is parsed, including the text before a closing tag when AutoPI's
   answer follows it. A closing tag inside the generated line itself is kept.
@@ -200,7 +200,7 @@ A vLLM server with a native tool parser can remove `<function=...>` text from
 `message.content`, even when AgentDojo expects to parse that text itself. With
 recovery enabled, AutoPI requests `return_token_ids: true` and decodes the
 generated token ids with the exact served tokenizer before normal template,
-judge or prompted-tool parsing. Generator and diagnostic-judge text keeps special
+judge or prompted-tool parsing. Generator and judge text keeps special
 tokens such as `<|im_start|>`, since a structural injection can be written with
 them, and drops only the end-of-turn token that stopped generation. Target text
 skips special tokens, as the server's own text does.
