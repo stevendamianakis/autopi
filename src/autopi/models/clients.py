@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 import requests
 
-from autopi.models.endpoints import ModelEndpoint
+from autopi.models.endpoints import ModelEndpoint, redact_url
 from autopi.models.recovery import get_decoder
 
 
@@ -17,6 +17,29 @@ def google_omitted_fields(endpoint: ModelEndpoint) -> set[str]:
     """The GenerateContentConfig field names of ``omit_parameters`` (``max_tokens`` is called
     ``max_output_tokens`` there)."""
     return {{"max_tokens": "max_output_tokens"}.get(key, key) for key in endpoint.omit_parameters}
+
+
+def google_config_fields(endpoint: ModelEndpoint) -> dict:
+    """A Google alias's ``extra_body`` as validated ``GenerateContentConfig`` fields: the names may
+    be snake_case or camelCase, as the SDK accepts them, nested settings become the SDK's own
+    types (so they are sent under their API names), and an unknown field is refused. The Google
+    generator gets the same check from the SDK when its request is built."""
+    if not endpoint.extra_body:
+        return {}
+    from google.genai import types
+    from pydantic import ValidationError
+
+    from autopi.models.endpoints import EndpointConfigError
+
+    try:
+        config = types.GenerateContentConfig.model_validate(endpoint.extra_body)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        where = ".".join(str(part) for part in error.get("loc", ()))
+        raise EndpointConfigError(
+            f"extra_body of the Google model {endpoint.model!r} is not a valid GenerateContentConfig "
+            f"({where}: {error.get('msg')})") from None
+    return {name: getattr(config, name) for name in config.model_fields_set}
 
 
 def _omitted_request_fields(endpoint: ModelEndpoint) -> set[str]:
@@ -28,6 +51,11 @@ def _omitted_request_fields(endpoint: ModelEndpoint) -> set[str]:
     if "max_tokens" in omitted and endpoint.max_tokens_field == "max_completion_tokens":
         omitted.add("max_completion_tokens")
     return omitted
+
+
+def _unset(value) -> bool:
+    """A request field that is not set: None, or the OpenAI SDK's NOT_GIVEN or omit sentinel."""
+    return value is None or type(value).__name__ in {"NotGiven", "Omit"}
 
 
 def require_no_reasoning_effort(endpoint: ModelEndpoint) -> None:
@@ -44,10 +72,11 @@ def require_no_reasoning_effort(endpoint: ModelEndpoint) -> None:
 
 # Reasoning delimiters a server can leave in a reply when no reasoning parser splits them off:
 # <think> (Qwen, DeepSeek R1 and others), [THINK] (Magistral), ◁think▷ (Kimi) and <seed:think>
-# (Seed-OSS). Each is (open, close). Callers remove reasoning only from a self-hosted endpoint
-# that may think (``ModelEndpoint.may_leak_reasoning``): a thinking-off or hosted endpoint
-# returns no reasoning in its reply, so tags there are content (an injected token the agent
-# quotes in a tool argument, a judge quoting the agent) and are kept.
+# (Seed-OSS). Each is (open, close). Callers remove reasoning only from an OpenAI-compatible or
+# Ollama endpoint that may think (``ModelEndpoint.may_leak_reasoning``), only when the server did
+# not return the reasoning in a field of its own (a reasoning parser does), and only reasoning
+# that opens the reply. A tag later in a reply is content (an injected token the agent quotes in
+# a tool argument, a judge quoting the agent) and is kept.
 _REASONING_DELIMITERS = (
     ("<think>", "</think>"), ("[THINK]", "[/THINK]"), ("◁think▷", "◁/think▷"), ("<seed:think>", "</seed:think>"),
 )
@@ -55,7 +84,6 @@ _LEADING_REASONING = re.compile(
     r"\A\s*(?:" + "|".join(re.escape(o) + ".*?" + re.escape(c) for o, c in _REASONING_DELIMITERS) + r")\s*", re.S)
 _UNCLOSED_REASONING = re.compile(
     r"\A\s*(?:" + "|".join(re.escape(o) for o, _ in _REASONING_DELIMITERS) + ")")
-_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
 # The markers that open AutoPI's own answers: a generated line and a judge verdict.
 _ANSWER_MARKER = re.compile(r"\[TEMPLATE_START\]|FAILURE_MODE:")
 
@@ -68,26 +96,39 @@ def _without_leading_blocks(text: str) -> str:
         text = text[match.end():]
 
 
-def visible_text(content: str | None, *, drop_unclosed: bool = False) -> str:
-    """The visible answer of a reply from a self-hosted endpoint that may think.
+def visible_text(content: str | None, *, drop_unclosed: bool = False, lone_closer: bool = False) -> str:
+    """The visible answer of a reply from an endpoint that may think and returned no reasoning
+    field of its own.
 
-    ``<think>`` reasoning (the format of Qwen-style templates) is removed wherever it sits, and
-    for a template that puts ``<think>`` in the prompt (the reply then holds only ``</think>``)
-    so is the text before the first ``</think>``. The other families (``[THINK]``, ``◁think▷``,
-    ``<seed:think>``) are removed only where the reply opens with them. With ``drop_unclosed``, a
+    Only reasoning that opens the reply is removed: one or more leading blocks of any family
+    (``<think>``, ``[THINK]``, ``◁think▷``, ``<seed:think>``). With ``drop_unclosed``, a leading
     block that never closes (the reply was cut off while reasoning) is reasoning to the end of the
-    reply. For a thinking target, serve the model with a reasoning parser: without one, text that
-    only looks like reasoning (for example a quoted ``</think>``) is removed too."""
-    text = _THINK_BLOCK.sub("", content or "")
-    head, sep, tail = text.partition("</think>")
-    if sep and "<think>" not in head:
-        text = tail
-    if drop_unclosed and "<think>" in text:
-        text = text.partition("<think>")[0]
+    reply. With ``lone_closer`` (thinking explicitly on, where a template can put ``<think>`` in
+    the prompt so that the reply holds only ``</think>``), the text before a first ``</think>``
+    that no ``<think>`` precedes is removed too. A tag anywhere else is content, for example an
+    injected token the agent quotes or a judge quoting the agent."""
+    text = content or ""
+    if lone_closer:
+        head, sep, tail = text.partition("</think>")
+        if sep and "<think>" not in head:
+            text = tail
     text = _without_leading_blocks(text)
     if drop_unclosed and _UNCLOSED_REASONING.match(text):
         return ""
     return text.strip()
+
+
+def returned_reasoning(message) -> bool:
+    """Whether the server returned the reply's reasoning in a field of its own, as vLLM and other
+    servers with a reasoning parser do (``reasoning_content`` or ``reasoning``). The reply text
+    then holds no reasoning, and reasoning-like tags in it are content."""
+    for name in ("reasoning_content", "reasoning"):
+        value = getattr(message, name, None)
+        if value is None:
+            value = (getattr(message, "model_extra", None) or {}).get(name)
+        if value:
+            return True
+    return False
 
 
 def strip_leading_reasoning(text: str | None) -> str:
@@ -221,10 +262,11 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
         if endpoint.provider == "ollama" and endpoint.thinking != "server":
             # Ollama's OpenAI-compatible API reads the thinking mode from reasoning_effort:
             # "none" turns thinking off, an effort level (the alias's own, else "medium") on.
+            # AgentDojo's client passes reasoning_effort=NOT_GIVEN, which counts as unset here.
             if endpoint.thinking == "off":
                 kwargs["reasoning_effort"] = "none"
-            else:
-                kwargs.setdefault("reasoning_effort", "medium")
+            elif _unset(kwargs.get("reasoning_effort")):
+                kwargs["reasoning_effort"] = "medium"
         if role == "target":
             # An alias's decoding settings shape the target's requests. IPI Arena's scoring judge
             # and WorldSim keep the temperature and token caps IPI Arena sets on each call, which
@@ -257,7 +299,7 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
             kwargs = decoder.prepare(kwargs)
         call_id = uuid.uuid4().hex
         if journal:
-            journal.emit("llm_request", role=role, call_id=call_id, endpoint=endpoint.base_url,
+            journal.emit("llm_request", role=role, call_id=call_id, endpoint=redact_url(endpoint.base_url),
                          request=kwargs, tokenizer_sha256=decoder.sha256 if decoder else None)
         try:
             response = original(*args, **kwargs)
@@ -278,13 +320,16 @@ def instrument_openai_client(client, endpoint: ModelEndpoint, *, journal=None, r
                 # ``<function=...>`` text. A target that may think can open its reply with
                 # reasoning; remove that so a hypothetical call written inside the reasoning is
                 # not parsed as a real tool call (a reply cut off while reasoning is all
-                # reasoning). Only a leading block is removed, never tags later in the reply. A
-                # thinking-off target does not reason, so nothing is removed: a reasoning tag in
-                # its reply is content, such as an injected token it quotes in a tool argument.
+                # reasoning). Only reasoning that opens the reply is removed, never tags later in
+                # the reply, and nothing when the server returned the reasoning in a field of its
+                # own. A thinking-off target does not reason, so nothing is removed either: a
+                # reasoning tag in its reply is content, such as an injected token it quotes.
                 for choice in getattr(response, "choices", None) or []:
                     message = getattr(choice, "message", None)
-                    if message is not None and getattr(message, "content", None):
-                        message.content = visible_text(message.content, drop_unclosed=True)
+                    if (message is not None and getattr(message, "content", None)
+                            and not returned_reasoning(message)):
+                        message.content = visible_text(message.content, drop_unclosed=True,
+                                                       lone_closer=endpoint.thinking == "on")
             return response
         except Exception as exc:
             if journal:
@@ -376,7 +421,7 @@ def query_endpoint(endpoint: ModelEndpoint, prompt: str, *, temperature=0.7, max
             payload = decoder.prepare(payload)
         call_id = uuid.uuid4().hex
         if journal:
-            journal.emit("llm_request", role=role, call_id=call_id, endpoint=url, request=payload,
+            journal.emit("llm_request", role=role, call_id=call_id, endpoint=redact_url(url), request=payload,
                          tokenizer_sha256=decoder.sha256 if decoder else None)
         data = _post_json(url, payload, endpoint, headers={"Authorization": "Bearer " + endpoint.api_key()},
                           journal=journal, role=role, call_id=call_id)

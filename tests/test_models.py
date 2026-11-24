@@ -417,23 +417,25 @@ def test_benchmark_data_digest_uses_the_full_scenario_set_not_the_task_selection
 # ── 0.2.6: unclosed reasoning, settings that reach the request, native-client checks ──
 
 def test_prompted_target_drops_a_reasoning_block_cut_off_before_it_closes():
-    """A reply cut off inside <think> (a token cap) must not have the call it was weighing
-    executed by AgentDojo's prompted parser."""
+    """A reply cut off inside the reasoning it opens with (a token cap) must not have the call it
+    was weighing executed by AgentDojo's prompted parser. Since 0.3.2 only reasoning that opens
+    the reply is removed; a <think> later in a reply is content (an injected token it quotes)."""
     pytest.importorskip("agentdojo")
     from agentdojo.agent_pipeline.llms.local_llm import _parse_model_output
 
-    cut_off = 'Checking. <think>Maybe <function=send_money>{"recipient": "X", "amount": 100}</function> or'
+    cut_off = '<think>Maybe <function=send_money>{"recipient": "X", "amount": 100}</function> or'
     message = SimpleNamespace(content=cut_off, tool_calls=None)
     client, _ = _mock_openai_client(SimpleNamespace(choices=[SimpleNamespace(message=message)]))
     instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1",
                                                    tool_mode="prompted", thinking="on"))
     text = client.chat.completions.create(model="m", messages=[]).choices[0].message.content
-    assert text == "Checking."
+    assert text == ""
     assert _parse_model_output(text)["tool_calls"] == []
 
 
-def test_ipi_reply_handling_of_an_unclosed_block_is_unchanged():
-    # IPI Arena replies keep their 0.2.5 handling; only the AgentDojo prompted parser drops it.
+def test_visible_text_keeps_an_unclosed_block_unless_asked_to_drop_it():
+    # drop_unclosed=False keeps a leading block that never closes; both callers (the AgentDojo
+    # prompted parser and, since 0.3.2, IPI Arena's clients) pass drop_unclosed=True.
     from autopi.models.clients import visible_text
 
     assert visible_text("<think>still reasoning") == "<think>still reasoning"

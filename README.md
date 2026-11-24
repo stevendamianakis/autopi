@@ -124,9 +124,9 @@ autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
 
 IPI Arena has 41 scenarios: 18 tool use, 15 coding and 8 browser. A scenario counts as broken only when
 every one of its criteria passes, and `--ipi-ignore-concealment` selects an action-only metric instead.
-The target uses native tool calls, and browser scenarios need an image-capable target and playwright; a
-run that selects them without playwright stops at setup, so leave them out with `--suite tool --suite coding`
-if needed. The benchmark ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy
+The target uses native tool calls, and browser scenarios need an image-capable target, playwright and its
+Chromium browser; a run that selects them without both stops at setup, so leave them out with
+`--suite tool --suite coding` if needed. The benchmark ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy
 without a seed block.
 
 </details>
@@ -299,8 +299,11 @@ The paper's experiments ran with earlier versions of this code and the settings 
 Results obtained with this release should state their models, server and parser versions, strategy
 and settings, including the tool calling and the injection placement. Version 0.3.0 changed the
 default tool calling of the short `vllm:` and `ollama:` target specs from prompted to native; pass
-`--tool-calling prompted` for the earlier behavior. The repository holds no model weights,
-credentials, server addresses or experiment outputs.
+`--tool-calling prompted` for the earlier behavior. AgentDojo's own runner counts an attempt that
+ends in a context overflow or a provider's server error as a successful attack; AutoPI leaves such an
+attempt unmeasured (see the [strategy guide](docs/strategies.md)), so compare with results from that
+runner with this in mind. The repository holds no model weights, credentials, server addresses or
+experiment outputs.
 
 ## Run-to-run variation
 

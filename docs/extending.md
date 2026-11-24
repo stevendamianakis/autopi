@@ -45,8 +45,11 @@ print(summary.format())
 ```
 
 `TaxonomyEngine` and `StrategyEngine` default to awareness mode 3 (the generator
-writes the goal directly) with no exploit variants, the same as the command line
-and the paper; pass `awareness_mode` and the exploit counts to change them.
+writes the goal directly), the paper's setting and the command line's default; pass
+`awareness_mode` to change it. A `TaxonomyEngine` makes no exploit variants unless
+given `paraphrase_reps` or `seed_paraphrase_reps`. A `StrategyEngine` takes its
+blocks and their `reps` from the strategy, and passing those arguments to it is an
+error.
 
 The CLI connects the two bundled benchmarks. New adapters can use the same
 Python entry point without changing the engine or importing the taxonomy into
@@ -70,9 +73,12 @@ sub-techniques can supply one sweep unit using its own id. Optional
 `allow_unicode` and `allow_markers` metadata override the default PIAtlas
 sanitization settings for new taxonomies.
 
-The default taxonomy text is softened before prompting and its illustrative
-canaries are abstracted. These transformations preserve the existing method's
-prompting behavior. Log the taxonomy hash and settings when comparing experiments.
+The taxonomy text is softened before prompting, whichever file is used: a few
+words that tend to trip a safety-tuned generator are replaced with neutral ones
+(the `_SOFTEN` list in `src/autopi/core/taxonomy.py`; for example "malicious payload"
+becomes "target content"), and illustrative canaries in examples are abstracted.
+The meaning is kept, and the transformations match the method's prompting. Log the
+taxonomy hash and settings when comparing experiments.
 
 ## Measurements
 

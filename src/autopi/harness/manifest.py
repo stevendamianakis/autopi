@@ -53,8 +53,41 @@ def benchmark_data_digest(adapter) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+_DIFFERENT_RUN = "output directory belongs to different settings/code/tokenizers; choose a fresh --logdir"
+
+
+def check_run_manifest(logdir: Path, settings: dict) -> None:
+    """Raise ValueError, without writing anything, when ``logdir`` holds a run with other settings,
+    code or tokenizers (or results without a manifest). The CLI calls it before the first request,
+    so a refused run leaves nothing (not even a trace) in the other run's folder."""
+    manifest = logdir / "run_manifest.json"
+    if not manifest.exists():
+        if any((logdir / "refiner_logs").rglob("*.json")):
+            raise ValueError("existing results have no run manifest; choose a fresh --logdir")
+        return
+    if json.loads(manifest.read_text(encoding="utf-8")) != _manifest_record(settings):
+        raise ValueError(_DIFFERENT_RUN)
+
+
 def save_run_manifest(logdir: Path, settings: dict):
     logdir.mkdir(parents=True, exist_ok=True)
+    record = _manifest_record(settings)
+    manifest = logdir / "run_manifest.json"
+    if not manifest.exists() and any((logdir / "refiner_logs").rglob("*.json")):
+        raise ValueError("existing results have no run manifest; choose a fresh --logdir")
+    temporary = logdir / (".manifest-" + uuid.uuid4().hex)
+    temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        try:
+            os.link(temporary, manifest)
+        except FileExistsError:
+            if json.loads(manifest.read_text(encoding="utf-8")) != record:
+                raise ValueError(_DIFFERENT_RUN) from None
+    finally:
+        temporary.unlink()
+
+
+def _manifest_record(settings: dict) -> dict:
     versions, sources = {}, {}
     modules = {"autopi": "autopi", "agentdojo": "agentdojo", "ipi_arena_bench": "ipi-arena-bench",
                "openai": "openai", "anthropic": "anthropic", "google_genai": "google-genai",
@@ -72,20 +105,5 @@ def save_run_manifest(logdir: Path, settings: dict):
         path = model.get("tokenizer_path")
         if path:
             tokenizers[role] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    record = {"format_version": 1, "settings": settings, "versions": versions, "sources": sources,
-              "tokenizer_sha256": tokenizers}
-    manifest = logdir / "run_manifest.json"
-    if not manifest.exists() and any((logdir / "refiner_logs").rglob("*.json")) and not manifest.exists():
-        raise ValueError("existing results have no run manifest; choose a fresh --logdir")
-    temporary = logdir / (".manifest-" + uuid.uuid4().hex)
-    temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        try:
-            os.link(temporary, manifest)
-        except FileExistsError:
-            if json.loads(manifest.read_text(encoding="utf-8")) != record:
-                raise ValueError(
-                    "output directory belongs to different settings/code/tokenizers; choose a fresh --logdir"
-                ) from None
-    finally:
-        temporary.unlink()
+    return {"format_version": 1, "settings": settings, "versions": versions, "sources": sources,
+            "tokenizer_sha256": tokenizers}

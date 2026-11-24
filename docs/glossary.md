@@ -22,7 +22,9 @@ kept, so scripts, saved logs and `--resume` keep working. This table maps them.
 | phase `seed` / `taxonomy` in scenario logs | the **seed** / the **sweep** block | A log's `phase` field names the block; the paper's phases are Initialize (seed), Explore (sweep) and Exploit (seed exploit, sweep exploit) |
 | `TaxonomyEngine`, `StrategyEngine` | the **engine** | `StrategyEngine` runs a YAML search strategy |
 | strategy YAML: `blocks`, `budget`, `stop` | **search strategy** σ: blocks, attempt budget B, stop rule ρ | See [the strategy guide](strategies.md) |
-| `max_attempts`, `attempt_budget`, `--max-attempts` | **attempt budget** | One attempt is one target call |
+| `attempt_budget` in scenario logs | **attempt budget** | One attempt is one target call |
+| `max_attempts` in scenario logs | (no paper term) | The schedule that follows the seed: the budget minus one when the run has a seed (132 for an L1 run, whose budget is 133) |
+| `--max-attempts` (`max_attempts_cap` in scenario logs, `max_attempts` in the run manifest) | (no paper term) | An optional extra cap on attempts; a run without it uses the whole budget |
 | `--mode 3`, `awareness_mode=3` | the **scenario-aware** setting | The paper's setting and the default; modes 1 and 2 are not used in the paper |
 | `--no-context`, `--no-legitimize` | **context blending**, **legitimize** | With the judge, the three adaptive mechanisms |
 | ASR, ASR@k in the summary | **scenario-level ASR**, ASR@k | The summary of a run without early stopping also prints an attempt-level rate, which the paper does not use |

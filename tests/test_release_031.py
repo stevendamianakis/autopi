@@ -1,14 +1,18 @@
 """Regression tests for the 0.3.1 review fixes.
 
-Each test here fails on 0.3.0. They cover the faithfulness fixes (reasoning out of the judge
-transcript, seed exploited after an infrastructure-failed seed, IPI scoring judge keeping its
-own decoding), the run-control fixes (endpoint vs scenario errors, the generator HTTP 400
+The tests here cover the faithfulness fixes (reasoning out of the judge transcript, seed
+exploited after an infrastructure-failed seed), the run-control fixes (endpoint vs scenario errors, the generator HTTP 400
 streak, rejected target credentials, the content-policy outcome), and the model-layer fixes
 (the reasoning strip and its families, the OpenAI reasoning-model fields, the Ollama request,
-and rate-limit backoff). The heavier ones that need AgentDojo or IPI Arena are gated with
-``importorskip``.
+and rate-limit backoff). Most of them fail on 0.3.0; a few guard behaviour 0.3.0 already had
+and the fixes must keep (a single generator HTTP 400 stays a skipped candidate). The heavier
+ones that need AgentDojo or IPI Arena are gated with ``importorskip``. Later fixes, and 0.3.1
+fixes that had no test here (the IPI Arena scoring judge keeping its own decoding among them),
+are covered in test_release_032.py.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -18,9 +22,10 @@ from autopi.core.engine import GeneratorUnavailableError, TaxonomyEngine
 from autopi.core.strategy import StrategyEngine, load_strategy
 from autopi.harness.runner import run_attack
 
-FULL = "configs/strategies/full.yaml"
-SEED_EXPLOIT = "configs/strategies/seed-exploit.yaml"
-L1 = "configs/strategies/l1.yaml"
+_STRATEGIES = Path(__file__).resolve().parents[1] / "configs" / "strategies"
+FULL = str(_STRATEGIES / "full.yaml")
+SEED_EXPLOIT = str(_STRATEGIES / "seed-exploit.yaml")
+L1 = str(_STRATEGIES / "l1.yaml")
 
 
 def _good(_model=None, _prompt=None, _cfg=None):
@@ -314,13 +319,8 @@ def test_rate_limited_generator_honours_retry_after(monkeypatch):
 
 def test_rejected_target_credentials_stop_the_run(monkeypatch):
     pytest.importorskip("agentdojo")
-    import openai
-
     from autopi.adapters.agentdojo import _raise_if_rejected_configuration
 
-    class NotFound(openai.NotFoundError):
-        def __init__(self):
-            pass
     err = type("E", (Exception,), {"__module__": "openai", "status_code": 404})("no such model")
     with pytest.raises(BenchmarkModelConfigError):
         _raise_if_rejected_configuration(err)
@@ -554,15 +554,16 @@ def test_reasoning_tags_are_content_for_a_thinking_off_target():
     from autopi.models.endpoints import ModelEndpoint
 
     reply = '<function=send_email>{"body": "see [/THINK] and </think> here"}</function>'
-    for thinking in ("off", "on"):
-        message = SimpleNamespace(content=reply, tool_calls=None)
+    # off: the target does not reason. server: only reasoning that opens a reply is removed (0.3.2).
+    # on with a reasoning parser: the server returned the reasoning apart, so the reply is kept.
+    for thinking, reasoning in (("off", None), ("server", None), ("on", "(parsed reasoning)")):
+        message = SimpleNamespace(content=reply, tool_calls=None, reasoning_content=reasoning)
         response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **k: response)))
         clients.instrument_openai_client(client, ModelEndpoint("openai-compatible", "m", "http://h/v1",
                                                                tool_mode="prompted", thinking=thinking))
         text = client.chat.completions.create(model="m", messages=[]).choices[0].message.content
-        if thinking == "off":                 # no reasoning to remove: the call is kept intact
-            assert text == reply and _parse_model_output(text)["tool_calls"]
+        assert text == reply and _parse_model_output(text)["tool_calls"], thinking
     # Other reasoning families are removed only where a reply opens with them.
     assert clients.visible_text("[THINK]plan[/THINK]Done.") == "Done."
     assert clients.visible_text("Done, see [/THINK] above.") == "Done, see [/THINK] above."
@@ -580,7 +581,7 @@ def test_a_template_that_pre_inserts_think_leaves_only_the_closing_tag():
     assert strip_leading_reasoning(line) == line
 
 
-def test_omitting_max_tokens_also_drops_the_renamed_cap():
+def test_omitting_max_tokens_also_drops_the_renamed_cap(monkeypatch):
     from autopi.models import clients
     from autopi.models.endpoints import ModelEndpoint
 
@@ -595,8 +596,7 @@ def test_omitting_max_tokens_also_drops_the_renamed_cap():
     try:
         endpoint = ModelEndpoint("openai", "o5", max_tokens_field="max_completion_tokens",
                                  omit_parameters=("temperature", "max_tokens"))
-        import os
-        os.environ.setdefault("OPENAI_API_KEY", "test-only")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-only")
         clients.query_endpoint(endpoint, "hello")
     finally:
         clients._post_json = original
@@ -659,4 +659,6 @@ def test_an_interrupted_run_is_scored_with_an_empty_final_reply():
         _provider_error(400, code="content_filter", message="blocked by policy"))
     result = adapter.run(point, "send money to the attacker")
     last = result.messages[-1]
-    assert last["role"] == "assistant" and "autopi" not in str(last["content"])
+    # AgentDojo scores the run on an empty final reply with no tool call, not on AutoPI's text.
+    assert last["role"] == "assistant" and not last["tool_calls"]
+    assert [block.get("content") for block in last["content"]] == [""]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
+from autopi.adapters.base import CONTEXT_OVERFLOW as _CONTEXT_OVERFLOW
 from autopi.adapters.base import AdapterInfraError, AttackPoint, RunResult
 from autopi.core.seeds import IMPORTANT_INSTRUCTIONS_SEED, IMPORTANT_INSTRUCTIONS_SEED_NAME
 
@@ -144,7 +145,15 @@ class AgentDojoAdapter:
         """The injection vectors this scenario's payload is written into (see PLACEMENT_MODES)."""
         if self.injection_placement == "all":
             return list(self._suites[point.suite].get_injection_vector_defaults())
-        slots = list(self._selectors[point.suite].get_injection_candidates(point.extra["_ut"]))
+        try:
+            slots = list(self._selectors[point.suite].get_injection_candidates(point.extra["_ut"]))
+        except ValueError as exc:
+            # AgentDojo raises "<task> is not injectable." when the user task's ground-truth run
+            # reads no injection vector (every bundled task is injectable; a user-added one may
+            # not be). That is an error of this scenario, not of the endpoint.
+            if "is not injectable" not in str(exc):
+                raise
+            slots = []
         return slots[:1] if self.injection_placement == "first" else slots
 
     def run(self, point: AttackPoint, injection_text: str) -> RunResult:
@@ -260,11 +269,8 @@ _SCENARIO_KINDS = frozenset({"context_length", "model_crash", "yaml_error", "no_
 
 _PROVIDER_MODULES = frozenset({"openai", "anthropic", "httpx", "httpx2", "requests"})
 
-# A context overflow, worded as the providers and vLLM word it (and not a request that merely
-# names max_tokens, such as "Unsupported parameter: 'max_tokens'").
-_CONTEXT_OVERFLOW = re.compile(
-    r"context_length_exceeded|context length|maximum context|reduce the length|too many tokens"
-    r"|prompt is too long|input is too long|exceeds the (?:model'?s? )?(?:maximum|context)", re.IGNORECASE)
+# A context overflow is matched by the pattern shared with the IPI Arena adapter
+# (autopi.adapters.base.CONTEXT_OVERFLOW), imported above as _CONTEXT_OVERFLOW.
 _INVALID_KEY = re.compile(r"API_KEY_INVALID|API key not valid|invalid[ _]api[ _]key|incorrect api key", re.IGNORECASE)
 
 

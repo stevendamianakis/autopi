@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autopi"
-version = "0.3.1"
+version = "0.3.2"
 description = "AutoPI: a taxonomy-driven, adaptive prompt-injection attacker and evaluation harness for LLM agents, generalized across benchmarks and models."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,9 +24,9 @@ dependencies = [
 # bundled patches (see THIRD_PARTY.md).
 [project.optional-dependencies]
 recovery = ["tokenizers>=0.20"]
-openai = ["openai>=1.40"]
-anthropic = ["anthropic>=0.34"]
-google = ["google-genai>=0.3"]
+openai = ["openai>=1.59.7"]
+anthropic = ["anthropic>=0.47.0"]
+google = ["google-genai>=1.15.0"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

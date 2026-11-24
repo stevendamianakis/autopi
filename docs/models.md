@@ -16,13 +16,13 @@ The YAML `models` mapping supports these fields:
 | `base_url` | Optional custom API URL; required for generic compatible endpoints; `ollama` defaults to `OLLAMA_BASE_URL` or `http://localhost:11434` |
 | `api_key_env` | Name of an environment variable containing the credential |
 | `tool_mode` | AgentDojo: `native` API tools (default) or `prompted` text tools; `--tool-calling` overrides it |
-| `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`). It is sent as `chat_template_kwargs.enable_thinking`, the switch Qwen-style templates read; a family with another switch (GPT-OSS, DeepSeek) ignores it, so use `server` and set the family's own field in `extra_body` |
+| `thinking` | Compatible endpoint template mode: `off`, `on`, `server`; an `ollama` target receives it as `reasoning_effort` (`none` for off, else the alias's effort or `medium`), and an `ollama` generator, which calls Ollama's native chat API, as `think` (`true` or `false`). It is sent as `chat_template_kwargs.enable_thinking`, the switch Qwen-style templates read; a family with another switch (GPT-OSS, DeepSeek) ignores it, so use `server` and set the family's own field in `extra_body` |
 | `tokenizer_path` | Optional exact tokenizer JSON for raw text recovery |
 | `temperature`, `top_p`, `max_tokens` | Optional decoding overrides for the target and the generator (`anthropic`: `max_tokens` only). An IPI Arena scoring judge or WorldSim alias does not send them: the benchmark's own per-call values, part of its scoring, are kept |
 | `max_tokens_field` | `max_tokens` (default) or `max_completion_tokens`, for `openai`/`openai-compatible` endpoints. OpenAI's o-series reasoning models take the output cap only as `max_completion_tokens`; set this and `omit_parameters: [temperature]` for them. Models that support tool calling only through the Responses API cannot be targets (see below) |
-| `timeout`, `retries` | Request timeout in seconds and the retry count for connection, timeout, rate-limit and server errors. On the generator's HTTP path (`openai-compatible`, `openai`, `ollama`) a rate limit (HTTP 429) is retried at least five times and waits as long as the server's `Retry-After` asks; the provider SDKs (targets, IPI Arena clients, Anthropic and Google generators) apply their own retry rules with this count |
-| `reasoning_effort` | Optional reasoning-effort field, sent on OpenAI-compatible request paths (`openai-compatible`, `openai`, `ollama`, and every IPI Arena client). The native `anthropic` and `google` clients (AgentDojo targets, generators) have no such field and refuse it; use `extra_body` there |
-| `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`) |
+| `timeout`, `retries` | Request timeout in seconds and the retry count for connection, timeout, rate-limit and server errors. On the generator's HTTP path (`openai-compatible`, `openai`, `ollama`) a rate limit (HTTP 429) is retried at least five times and waits as long as the server's `Retry-After` asks, up to 120 seconds a wait; the provider SDKs (targets, IPI Arena clients, Anthropic and Google generators) apply their own retry rules with this count |
+| `reasoning_effort` | Optional reasoning-effort field, sent on OpenAI-compatible request paths (`openai-compatible` and `openai` endpoints, `ollama` targets, and every IPI Arena client). The native `anthropic` and `google` clients (AgentDojo targets, generators) have no such field and refuse it; use `extra_body` there. An `ollama` generator calls Ollama's native chat API, which has no such field either: the CLI prints a note, and the native API's own field goes in `extra_body` |
+| `extra_body` | Additional provider-specific request fields: added to the request body on OpenAI-compatible and Anthropic requests, and to the `GenerateContentConfig` on native Google requests (for example `thinking_config`, or the API's own spelling `thinkingConfig`). Google fields are checked against the SDK's `GenerateContentConfig`, so a misspelt field is refused at setup |
 | `omit_parameters` | Parameter names to leave out of the request, such as `temperature` or `max_tokens` (`max_output_tokens` on Google; with `max_tokens_field: max_completion_tokens`, also that field). On a native Google AgentDojo target this also removes AgentDojo's own value (its temperature 0 and 65,535-token cap). An `anthropic` alias cannot omit `max_tokens`, which the API requires. On an Ollama generator, `max_tokens` here drops its `num_predict` option |
 
 The generator and the judge (the LLM that diagnoses failed attempts) use
@@ -83,6 +83,12 @@ provider's native API), not OpenAI's Responses API:
   on either benchmark. It can still be the generator, which sends no tools.
 - **Azure OpenAI** works as an `openai-compatible` endpoint through its
   OpenAI-compatible (v1) URL with key authentication.
+- **A custom `base_url` on an `anthropic` or `google` alias** is the root the native
+  SDK adds its own path to (`/v1/messages`, `/v1/models/...`), while IPI Arena's
+  clients use the provider's OpenAI-compatible API and add `/chat/completions` to
+  the same `base_url`. One custom URL therefore cannot serve both; leave
+  `base_url` unset (each client then uses the provider's public URL) or define
+  separate aliases for the two uses.
 - **AWS Bedrock** (SigV4) and **Vertex AI** sign-in with service accounts or
   application-default credentials are not supported. A Gemini model is reached
   through the Gemini API with an API key (`GOOGLE_API_KEY`, or `GEMINI_API_KEY` as
@@ -169,26 +175,33 @@ its reasoning. How AutoPI keeps reasoning out depends on where it appears:
   messages (and its scoring reads them), but AutoPI drops them from the transcript its
   judge and context blending read.
 - **Gemini** returns no thoughts unless `include_thoughts` is requested, and AgentDojo
-  would turn returned thoughts into ordinary text. A target alias that requests them
-  is refused at setup.
+  would turn returned thoughts into ordinary text. A target alias that requests them,
+  in either spelling (`include_thoughts` or the API's `includeThoughts`), is refused
+  at setup.
 - **A self-hosted model that thinks** can leave reasoning in the reply text when the
   server has no reasoning parser. Serve such a target with a vLLM
   `--reasoning-parser` (or the server's equivalent), which keeps reasoning out of the
   scored reply, the tool-call text and the attacker's view. A **native** AgentDojo
   target needs it, since AgentDojo scores its reply as returned.
-- **Without a parser**, AutoPI removes leaked reasoning only from a self-hosted
-  endpoint whose thinking is not `off`: from a prompted AgentDojo target before tool
-  parsing (so a call drafted inside the reasoning is not executed) and from IPI Arena
-  replies. `<think>` reasoning is removed wherever it sits, including the text before
-  the first `</think>` of a template that puts the opener in the prompt, and a block
-  cut off before it closes; `[THINK]`, `◁think▷` and `<seed:think>` are removed only
-  where the reply opens with them. Text that merely looks like reasoning, such as a
-  quoted `</think>`, can then be removed too, which is one more reason to use a
-  parser.
-- **A thinking-off or hosted endpoint** does not return reasoning in its reply, so
-  nothing is removed. A reasoning-like tag there is content, for example an injected
-  token the agent quotes in a tool argument. A family that reasons whatever
-  `thinking` says (GPT-OSS, DeepSeek-R1) should be configured with `thinking: server`.
+- **A server with a reasoning parser** returns the reasoning in a field of its own
+  (`reasoning_content` or `reasoning`). AutoPI then keeps the reply as it is.
+- **Without a parser**, AutoPI removes leaked reasoning from an `openai-compatible`
+  or `ollama` endpoint whose thinking is not `off`: from a prompted AgentDojo target
+  before tool parsing (so a call drafted inside the reasoning is not executed) and
+  from IPI Arena replies. Only reasoning that opens the reply is removed: one or more
+  leading `<think>`, `[THINK]`, `◁think▷` or `<seed:think>` blocks, a leading block
+  cut off before it closes (all of the reply), and, with `thinking: on`, the text
+  before a first `</think>` that no `<think>` precedes (a template that puts the
+  opener in the prompt). A tag later in a reply is content and is kept, for example
+  an injected token the agent quotes in a tool argument, or IPI Arena's judge
+  quoting the injection.
+- **A thinking-off endpoint** does not reason, so nothing is removed. A hosted service
+  configured as `openai-compatible` (Azure, for example) returns no reasoning in its
+  reply; leaving its thinking at the default `server` is safe too, since only a reply
+  that opens with reasoning is changed. A family that reasons whatever `thinking`
+  says (GPT-OSS, DeepSeek-R1) should be configured with `thinking: server` and served
+  with a reasoning parser; without one, and with the opener in the prompt, use
+  `thinking: on` so that the text before `</think>` is removed.
 - **The generator and the judge**, when self-hosted and not thinking-off,
   have reasoning that opens their reply removed before the line or the
   `FAILURE_MODE` is parsed, including the text before a closing tag when AutoPI's
@@ -237,6 +250,20 @@ one output directory when their experiment settings match.
 
 Traces default to `LOGDIR/traces`; use `--trace-dir` for another location. They
 include prompts, original responses, recovered responses when enabled, tool
-messages and outcomes, flushed incrementally. Headers and API-key values are
-excluded. Treat prompts and benchmark conversations as research data when
-sharing your own traces.
+messages and outcomes, flushed incrementally. Authorization headers, API-key
+fields, API-key values from the environment, the Google SDK's HTTP response
+headers and any `user:password` part of a URL are left out. A field named like a
+password or a secret keeps its name, with its value shown as `<redacted>`, so a
+tool call such as AgentDojo's `update_password` stays readable. Treat prompts and
+benchmark conversations as research data when sharing your own traces.
+
+### Content-policy refusals
+
+A provider's refusal of a prompt on content-policy grounds is recognised in three
+forms: Azure OpenAI's `content_filter` (HTTP 400), OpenAI's `invalid_prompt` for a
+flagged prompt (HTTP 400), and a moderation or guardrail block answered with HTTP
+403 (OpenRouter). On AgentDojo such a refusal of the target is scored by AgentDojo
+as a defended attempt; on IPI Arena it is a failed run, left out of the score as
+IPI Arena leaves it out, and it does not count toward the stop for a failing
+target. A refused generator prompt is skipped like a refusal. Another provider's
+refusal in another form counts as a rejected request, that is an endpoint error.

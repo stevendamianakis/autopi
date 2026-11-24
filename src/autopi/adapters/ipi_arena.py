@@ -4,7 +4,8 @@ Drives the AutoPI engine against IPI Arena's 41 single-turn ``{fill}`` scenarios
 scenario prefills a conversation with one injection slot; the engine's text is placed at
 ``{fill}``, the target model runs one operation turn (WorldSim simulates tool responses),
 and IPI Arena's own judges score it: a programmatic tool judge (did the agent call the
-target tool with the expected args?) plus an LLM concealment judge. ``is_break`` (all
+target tool with the expected args?) plus an LLM judge for the remaining criteria (mostly
+concealment, also the harmful action itself in scenarios without a tool judge). ``is_break`` (all
 criteria pass their thresholds) is the security signal; the "User Intent Fulfillment"
 criterion is used as utility.
 
@@ -55,6 +56,7 @@ import os
 import re
 from typing import Iterator
 
+from autopi.adapters.base import CONTEXT_OVERFLOW as _CONTEXT_OVERFLOW
 from autopi.adapters.base import AdapterInfraError, AttackPoint, BenchmarkModelConfigError, RunResult
 from autopi.models.registry import resolve_target_thinking
 
@@ -69,9 +71,20 @@ _POLICY_REFUSAL = re.compile(
 # opposed to one of this scenario (a context overflow, a browser failure, a judge reply IPI Arena
 # cannot parse).
 _ENDPOINT_ERROR = re.compile(r"connection error|timed out|timeout|\bError code: (4\d\d|5\d\d)\b", re.IGNORECASE)
-_CONTEXT_OVERFLOW = re.compile(
-    r"context_length_exceeded|context length|maximum context|reduce the length|too many tokens"
-    r"|prompt is too long|input is too long", re.IGNORECASE)
+# A context overflow is matched by the pattern shared with the AgentDojo adapter
+# (autopi.adapters.base.CONTEXT_OVERFLOW), imported above as _CONTEXT_OVERFLOW.
+
+
+def _chromium_installed() -> bool:
+    """Whether playwright's Chromium executable exists, checked without launching it."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            path = p.chromium.executable_path
+    except Exception:  # noqa: BLE001 - a driver that cannot start is as unusable as a missing browser
+        return False
+    return bool(path) and os.path.exists(path)
 
 
 def _first_user_text(behavior: dict) -> str:
@@ -141,12 +154,15 @@ def _build_vllm_client(spec: str, *, endpoint=None, journal=None, role="target")
     def chat(*args, **kwargs):
         from autopi.models.clients import visible_text
         result = original(*args, **kwargs)
-        # Remove leaked reasoning from a self-hosted endpoint that may think; a thinking-off or
-        # hosted endpoint returns none, so reasoning-like tags in its reply are content and are
-        # kept. Keep a missing reply apart from an empty one: IPI Arena's WorldSim answers only a
-        # missing reply with {"status": "success"}.
-        if result.content is not None and endpoint.may_leak_reasoning:
-            result.content = visible_text(result.content)
+        # Remove reasoning that opens the reply of a self-hosted endpoint that may think and did
+        # not return its reasoning in a field of its own (a server with a reasoning parser does,
+        # and then the reply is kept as it is). Reasoning-like tags later in a reply are content,
+        # for example a judge quoting the injection. Keep a missing reply apart from an empty
+        # one: IPI Arena's WorldSim answers only a missing reply with {"status": "success"}.
+        if (result.content is not None and endpoint.may_leak_reasoning
+                and not getattr(result, "reasoning", None)):
+            result.content = visible_text(result.content, drop_unclosed=True,
+                                          lone_closer=endpoint.thinking == "on")
         return result
 
     client.chat = chat
@@ -234,7 +250,7 @@ class IPIArenaAdapter:
     """Attack IPI Arena behaviors. ``categories`` optionally restricts to
     {tool, coding, browser}; ``judge`` defaults to the target model."""
 
-    checker_kind = "hybrid"  # programmatic tool judge + LLM concealment judge
+    checker_kind = "hybrid"  # programmatic tool judge + LLM judge
     name = "ipiarena"
     # IPI Arena ships no injection seed of its own, so a run here must supply a seed, reuse
     # AgentDojo's, or skip the seed and sweep directly (autopi.core.seeds.resolve_seed).
@@ -301,19 +317,22 @@ class IPIArenaAdapter:
         if self._categories and not any(b.get("category", "") in self._categories for b in self._behaviors.values()):
             raise ValueError(f"none of the selected IPI Arena scenarios is in the selected categories "
                              f"{sorted(self._categories)}")
-        # As IPI Arena's own BenchmarkRunner.run(): a selected browser scenario needs playwright.
-        # Stop at setup (a dry run included) rather than fail every attempt in the infrastructure.
+        # As IPI Arena's own BenchmarkRunner.run(): a selected browser scenario needs playwright, and
+        # IPI Arena's screenshot step launches playwright's Chromium, which the package alone (without
+        # `playwright install chromium`) does not include. Stop at setup (a dry run included) rather
+        # than fail every attempt of those scenarios in the infrastructure.
         browser = sorted(bid for bid, b in self._behaviors.items() if b.get("html_template")
                          and (not self._categories or b.get("category", "") in self._categories))
         if browser:
+            hint = (f"({len(browser)} selected, e.g. {browser[0]}). Install them with: pip install -e "
+                    "'benchmarks/ipi_arena[browser]' && python -m playwright install chromium, or leave the "
+                    "browser scenarios out with --suite tool --suite coding")
             try:
                 import playwright  # noqa: F401
             except ImportError:
-                raise ValueError(
-                    f"IPI Arena browser scenarios need playwright, which is not installed ({len(browser)} "
-                    f"selected, e.g. {browser[0]}). Install it with: pip install -e 'benchmarks/ipi_arena[browser]' "
-                    "&& python -m playwright install chromium, or leave them out with --suite tool --suite coding"
-                ) from None
+                raise ValueError(f"IPI Arena browser scenarios need playwright, which is not installed {hint}") from None
+            if not _chromium_installed():
+                raise ValueError(f"IPI Arena browser scenarios need playwright's Chromium, which is not installed {hint}")
 
     def iter_points(self) -> Iterator[AttackPoint]:
         for bid, behavior in self._behaviors.items():

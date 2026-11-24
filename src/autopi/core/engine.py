@@ -111,7 +111,8 @@ def _generator_unreachable(exc: BaseException) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError, RequestsConnectionError, RequestsTimeout)):
         return True
     name = type(exc).__name__
-    if "Connection" in name or "Timeout" in name:
+    # "Connect" also covers httpx's ConnectError, which the google-genai SDK raises.
+    if "Connect" in name or "Timeout" in name:
         return True
     status = _http_status(exc)
     return status is not None and (status == 429 or status >= 500)

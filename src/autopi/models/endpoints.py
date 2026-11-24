@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import yaml
+
+
+def redact_url(url: str | None) -> str | None:
+    """The URL without a ``user:password@`` part, for manifests and traces."""
+    return re.sub(r"(?<=//)[^/@\s]*@", "", url) if url else url
 
 
 class EndpointConfigError(ValueError):
@@ -111,18 +117,22 @@ class ModelEndpoint:
         be scored as the agent's output and shown to the attacker's judge, which the threat model
         excludes. Gemini returns no thoughts unless asked."""
         def asks(value) -> bool:
+            # Any spelling of the field: include_thoughts (the SDK's) or includeThoughts (the API's).
             if isinstance(value, dict):
-                return any((key == "include_thoughts" and item is True) or asks(item) for key, item in value.items())
+                return any((str(key).replace("_", "").lower() == "includethoughts" and item is True) or asks(item)
+                           for key, item in value.items())
             return isinstance(value, list) and any(asks(item) for item in value)
 
         if asks(self.extra_body):
             raise EndpointConfigError(
-                "a target cannot request its reasoning (include_thoughts): it would be scored as the agent's "
-                "output and reach the attacker's judge. Remove include_thoughts from the target's extra_body")
+                "a target cannot request its reasoning (include_thoughts or includeThoughts): it would be "
+                "scored as the agent's output and reach AutoPI's judge. Remove it from the target's extra_body")
 
     def public_config(self) -> dict:
-        """Config includes an environment variable NAME, never its secret value."""
+        """Config includes an environment variable NAME, never its secret value, and the base URL
+        without any user:password part."""
         config = asdict(self)
+        config["base_url"] = redact_url(self.base_url)
         config["omit_parameters"] = list(self.omit_parameters)
         return config
 

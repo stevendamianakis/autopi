@@ -14,14 +14,32 @@ class TraceWriteError(RuntimeError):
     fatal = True
 
 
+# Fields left out of every trace: credentials (an authorization header, an API key) and the
+# Google SDK's raw HTTP response, which holds the response headers.
+_DROPPED_KEY = re.compile(r"authorization|api[_-]?key$", re.I)
+_DROPPED_FIELDS = frozenset({"sdk_http_response"})
+# A field named like a password or a secret keeps its name and structure, so a tool call or a
+# tool schema stays readable (AgentDojo's update_password), but a text or number value is
+# replaced with "<redacted>".
+_REDACTED_KEY = re.compile(r"password|secret", re.I)
+
+
 def plain(value):
     if hasattr(value, "model_dump"):
         return plain(value.model_dump(mode="json"))
     if dataclasses.is_dataclass(value):
         return plain(dataclasses.asdict(value))
     if isinstance(value, dict):
-        return {str(key): plain(item) for key, item in value.items()
-                if not re.search(r"authorization|api[_-]?key$|password|secret", str(key), re.I)}
+        out = {}
+        for key, item in value.items():
+            name = str(key)
+            if _DROPPED_KEY.search(name) or name in _DROPPED_FIELDS:
+                continue
+            if _REDACTED_KEY.search(name) and isinstance(item, (str, int, float)) and not isinstance(item, bool):
+                out[name] = "<redacted>"
+            else:
+                out[name] = plain(item)
+        return out
     if isinstance(value, (list, tuple)):
         return [plain(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):

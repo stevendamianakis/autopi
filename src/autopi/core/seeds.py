@@ -43,6 +43,7 @@ def resolve_seed(
     benchmark_default_template: str | None,
     benchmark_default_name: str | None,
     benchmark: str = "",
+    no_seed_hint: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve the fixed-seed ``(template, name)`` for a run, or ``(None, None)`` when the
     seed is skipped (``no_seed``).
@@ -51,7 +52,9 @@ def resolve_seed(
     ``seed_source == "agentdojo"`` reuses the built-in AgentDojo seed on any benchmark;
     otherwise the benchmark's own default seed is used. Raises :class:`ValueError` with an
     actionable message when a seed file lacks the placeholder, or when the benchmark ships
-    no seed and none of the three options was chosen.
+    no seed and none of the three options was chosen. ``no_seed_hint`` replaces the message's
+    suggestion to skip the seed (a run with a strategy skips it with a strategy without a seed
+    block, not with --no-seed).
     """
     if no_seed:
         return None, None
@@ -68,7 +71,7 @@ def resolve_seed(
     if benchmark_default_template is None:
         raise ValueError(
             f"benchmark {benchmark or '?'!r} ships no fixed seed. Choose one: supply your own "
-            "with --seed-file PATH, reuse AgentDojo's seed with --seed-source agentdojo, or skip "
-            "the seed and sweep directly with --no-seed."
+            "with --seed-file PATH, reuse AgentDojo's seed with --seed-source agentdojo, or "
+            f"{no_seed_hint or 'skip the seed and sweep directly with --no-seed'}."
         )
     return benchmark_default_template, benchmark_default_name

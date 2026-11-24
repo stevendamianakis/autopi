@@ -81,6 +81,7 @@ def _check_generator(engine) -> None:
 
 
 @click.group()
+@click.version_option(package_name="autopi", prog_name="autopi")
 def main() -> None:
     """AutoPI — taxonomy-driven adaptive prompt-injection evaluation."""
 
@@ -173,7 +174,8 @@ def main() -> None:
 @click.option("--limit", default=None, type=click.IntRange(1), help="Attack only the first N data points (smoke tests).")
 @click.option("--shard", default=0, type=int, help="This worker's shard index (0-based) for parallel sharded runs.")
 @click.option("--num-shards", default=1, type=int, help="Total number of shards; this worker takes points [shard::num-shards].")
-@click.option("--resume", is_flag=True, help="Skip scenarios whose log already exists (resume an interrupted run).")
+@click.option("--resume", is_flag=True, help="Skip scenarios whose log already exists (resume an interrupted run); "
+                                              "scenarios an earlier run lost to infrastructure errors run last.")
 @click.option("--logdir", default=None, help="Output directory: the run manifest, one JSON log per scenario under refiner_logs/, and traces.")
 def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_tasks, benchmark_version,
         defense, paraphrase_reps, stack_depth, stack_pool, seed_para_reps, seed_only, no_seed,
@@ -194,7 +196,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     from autopi.core.seeds import resolve_seed
     from autopi.core.strategy import StrategyEngine, load_strategy
     from autopi.harness.journal import Journal
-    from autopi.harness.manifest import benchmark_data_digest, save_run_manifest
+    from autopi.harness.manifest import benchmark_data_digest, check_run_manifest, save_run_manifest
     from autopi.harness.runner import CorruptScenarioLogError, TargetUnavailableError
     from autopi.models.endpoints import load_model_catalog, override_endpoint, resolve_endpoint
 
@@ -216,6 +218,16 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                                    "each scenario defines it")
         tool_calling = injection_placement = None
     else:
+        # The IPI Arena options have no meaning on AgentDojo (its scoring is programmatic and it
+        # simulates no tools), so they are refused rather than silently ignored.
+        context = click.get_current_context()
+        given = [f"--{name.replace('_', '-')}" for name in ("judge", "worldsim", "ipi_behaviors_path",
+                                                             "ipi_ignore_concealment", "ipi_max_steps",
+                                                             "ipi_harness_retries")
+                 if context.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE]
+        if given:
+            raise click.UsageError(f"{', '.join(given)} {'apply' if len(given) > 1 else 'applies'} to IPI Arena "
+                                   "only; AgentDojo scores attempts with its own checks and simulates no tools")
         tool_calling = tool_calling or os.environ.get("AUTOPI_TOOL_CALLING") or None
         injection_placement = injection_placement or os.environ.get("AUTOPI_INJECTION_PLACEMENT") or "agentdojo"
         if tool_calling is not None and tool_calling not in TOOL_CALLING_MODES:
@@ -256,6 +268,11 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                                             tool_mode=tool_calling)
         refiner_endpoint = override_endpoint(resolve_endpoint(refiner, catalog, role="refiner"),
                                              tokenizer_path=refiner_tokenizer)
+        if refiner_endpoint.provider == "ollama" and refiner_endpoint.reasoning_effort:
+            # The alias may serve as the target too, where Ollama's OpenAI-compatible API reads it.
+            click.echo("[autopi] note: the Ollama generator calls Ollama's native chat API, which takes no "
+                       "reasoning_effort; it sends think from the alias's thinking setting. Put the native "
+                       "API's own field in extra_body to set an effort there.", err=True)
         if refiner_endpoint.tokenizer_path:
             from autopi.models.recovery import get_decoder
 
@@ -281,7 +298,8 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
             no_seed=bool(no_seed), seed_source=seed_source or os.environ.get("TAX_SEED_SOURCE"),
             seed_file=seed_file or os.environ.get("TAX_SEED_FILE"),
             benchmark_default_template=getattr(adapter, "default_seed_template", None),
-            benchmark_default_name=getattr(adapter, "default_seed_name", None), benchmark=benchmark)
+            benchmark_default_name=getattr(adapter, "default_seed_name", None), benchmark=benchmark,
+            no_seed_hint="use a strategy without a seed block" if strategy_data else None)
         cfg = RefinerConfig(endpoint=refiner_endpoint, journal=journal)
         common = dict(refiner_model=refiner_endpoint.model, refiner_config=cfg, awareness_mode=mode,
                       taxonomy_path=taxonomy_path, use_judge=False if no_judge else None,
@@ -314,13 +332,7 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
         if dry_run:
             click.echo("Validated. No model calls were made.")
             return
-        # One short test request to the generator before the first scenario, with the settings the
-        # run will use, so that a generator rejecting them (an unsupported temperature or max_tokens,
-        # a wrong model id or key) stops the run now instead of turning it into seed-only results.
-        # Skipped when the run makes no generator request (only the seed is tried).
-        budget = min(max_attempts or engine.attempt_budget, engine.attempt_budget)
-        if not (engine.use_seed and budget <= 1):
-            _check_generator(engine)
+        settings = None
         if logdir:
             from autopi.core.taxonomy import _BUNDLED_TAXONOMY
             settings = {
@@ -347,6 +359,17 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
                 "provider_environment": _provider_environment(),
                 "benchmark_data_sha256": benchmark_data_digest(adapter),
             }
+            # Refuse a folder that holds another run before any request, so that nothing (not even
+            # a trace of the generator check) is written into it.
+            check_run_manifest(Path(logdir), settings)
+        # One short test request to the generator before the first scenario, with the settings the
+        # run will use, so that a generator rejecting them (an unsupported temperature or max_tokens,
+        # a wrong model id or key) stops the run now instead of turning it into seed-only results.
+        # Skipped when the run makes no generator request (only the seed is tried).
+        budget = min(max_attempts or engine.attempt_budget, engine.attempt_budget)
+        if not (engine.use_seed and budget <= 1):
+            _check_generator(engine)
+        if settings is not None:
             save_run_manifest(Path(logdir), settings)
     except (ValueError, OSError) as exc:
         # Configuration/setup problems are usage errors. A failure during the run itself
@@ -360,6 +383,11 @@ def run(benchmark, mode, target, refiner, judge, suites, user_tasks, injection_t
     except (GeneratorUnavailableError, TargetUnavailableError, BenchmarkModelConfigError) as exc:
         raise click.ClickException(f"{exc}.") from exc
     click.echo("\n" + summary.format())
+    if not summary.n and summary.infrastructure_only:
+        # Nothing was measured: exit with an error so a script does not take the run for a result.
+        raise click.ClickException(
+            "no scenario was scored: every attempt failed in the infrastructure (see the lines above). "
+            "Check the target, then rerun the same command with --resume")
 
 
 if __name__ == "__main__":

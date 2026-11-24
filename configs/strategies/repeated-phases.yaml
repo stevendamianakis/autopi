@@ -19,9 +19,9 @@ blocks:
   - kind: sweep
     id: second_sweep
     level: 2
-    techniques: [F1.T2, F2.T5]
+    # Five sub-techniques of two techniques give ten pairs, six of them across the two techniques.
+    techniques: [F1.T2.S1, F1.T2.S2, F1.T2.S3, F2.T5.S1, F2.T5.S2]
     order: canonical
-    pool_size: 6
     limit: 10
   - kind: sweep_exploit
     source: second_sweep

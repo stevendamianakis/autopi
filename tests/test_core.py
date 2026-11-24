@@ -1093,9 +1093,17 @@ def test_cli_passes_the_target_settings_to_the_backend(monkeypatch, tmp_path):
     assert seen["target_thinking"] == "off" and seen["target_max_tokens"] is None
     assert "target_thinking=off" in res.output
     res = CliRunner().invoke(cli_main, [*base, "--logdir", str(tmp_path / "b"), "--target-thinking", "on",
-                                        "--target-max-tokens", "2048", "--ipi-behaviors-path", "/data"])
+                                        "--target-max-tokens", "2048"])
     assert res.exit_code == 0, res.output
-    assert (seen["target_thinking"], seen["target_max_tokens"], seen["ipi_behaviors_path"]) == ("on", 2048, "/data")
+    assert (seen["target_thinking"], seen["target_max_tokens"]) == ("on", 2048)
+    ipi = ["run", "--benchmark", "ipiarena", "--target", "vllm:8000:x", "--no-judge", "--no-context",
+           "--no-legitimize", "--seed-source", "agentdojo"]
+    res = CliRunner().invoke(cli_main, [*ipi, "--logdir", str(tmp_path / "i"), "--ipi-behaviors-path", "/data"])
+    assert res.exit_code == 0, res.output
+    assert seen["ipi_behaviors_path"] == "/data"
+    # An IPI Arena option on an AgentDojo run is refused rather than ignored.
+    res = CliRunner().invoke(cli_main, [*base, "--logdir", str(tmp_path / "d"), "--ipi-behaviors-path", "/data"])
+    assert res.exit_code == 2 and "IPI Arena only" in res.output
     monkeypatch.setenv("AUTOPI_TARGET_THINKING", "sometimes")
     res = CliRunner().invoke(cli_main, [*base, "--logdir", str(tmp_path / "c")])
     assert res.exit_code == 2 and "target thinking" in res.output

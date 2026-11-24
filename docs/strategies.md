@@ -28,8 +28,9 @@ blocks:
   - kind: sweep
     id: second
     level: 2
-    techniques: [F1, F2]
-    pool_size: 5
+    techniques: [F1.T2, F2.T5]
+    order_ids: [F1.T2.S1, F2.T5.S1, F1.T2.S2, F2.T5.S2]
+    pool_size: 4
     limit: 8
   - kind: sweep_exploit
     source: second
@@ -52,7 +53,11 @@ loads, rather than running an empty schedule.
 Optional `order_ids` is an ordered list of sub-technique ids to put first;
 unlisted selected sub-techniques follow in the chosen order. `pool_size` restricts the
 combination pool after ordering. `limit` caps the number of combinations tried.
-Combinations are unordered sets, sampled without repetition within a sweep.
+Combinations are unordered sets without repetition, listed in a fixed order (by
+their members' positions in the pool), so `pool_size` and `limit` keep the first
+ones; use `order` or `order_ids` to choose which sub-techniques come first. In the
+example above, `order_ids` puts two sub-techniques of each technique first, so the
+four-unit pool gives six pairs, four of them across the two techniques.
 Higher levels are generated lazily; setting a small target budget does not
 allocate billions of combinations.
 
@@ -91,16 +96,29 @@ A target run that fails in the infrastructure (a transport, provider or parse
 error, or a request the provider rejected) does consume the budget, but never
 becomes a failed sweep line to refine or a failed rewrite or variant listed in an exploit prompt. A scenario whose every
 attempt was an infrastructure failure is not logged and stays out of ASR; the
-summary counts it, and `--resume` runs it again. The run stops when the target keeps
-failing with **endpoint errors**: it cannot be reached, times out, is rate limited,
-fails on the server, or rejects the request (for example a parameter the model does
-not support, or a server started without the tool-call parser native tools need).
-It stops after **25 target attempts in a row** that failed that way, or after ten
-scenarios in a row whose every attempt did, before the current scenario is logged.
-Errors tied to one scenario (a context overflow, a malformed tool call, a broken
-environment) do not count, so a scenario that always fails on its own cannot stop
-the run. A target that rejects its key, account or model id (HTTP 401, 402, 403
-other than a moderation block, 404, or an invalid API key) stops the run at once.
+summary counts it, and `--resume` runs it again. A scenario whose **first ten
+attempts** all fail in the infrastructure, whatever the error, ends there instead
+of spending the rest of its budget. Such scenarios are listed in
+`LOGDIR/infrastructure_only.jsonl`, and `--resume` runs them after the others, so a
+group of scenarios that fail on their own cannot stop every resumed run before the
+rest. The run stops when the target keeps failing with **endpoint errors**: it
+cannot be reached, times out, is rate limited, fails on the server, or rejects the
+request (for example a parameter the model does not support, or a server started
+without the tool-call parser native tools need). It stops after **25 target
+attempts in a row** that failed that way, or after ten scenarios in a row whose
+every attempt did, before the current scenario is logged. Errors tied to one
+scenario (a context overflow, a malformed tool call, a broken environment) do not
+count, and since they show that the endpoint answers, they end both streaks. A
+context overflow is recognised by its wording (OpenAI, vLLM, Anthropic, Gemini,
+llama.cpp and Hugging Face TGI wordings); one worded otherwise counts as an
+endpoint error. A target that rejects its key, account or model id (HTTP 401, 402,
+403 other than a moderation block, 404, or an invalid API key) stops the run at
+once. When no scenario of a run was scored, the summary prints the ASR as `n/a`
+and the command exits with an error. AgentDojo's own runner
+(`benchmark_suite_with_injections`) scores a context overflow or a provider's
+server error as a successful attack (utility false, security true); AutoPI leaves
+such an attempt unmeasured instead, which matters when comparing with results
+produced by that runner.
 On AgentDojo, a request the target's provider refuses on content-policy grounds
 (Azure `content_filter`, OpenAI `invalid_prompt`, a moderation 403) ends the agent's
 run there and is scored by AgentDojo on the state it reached, as a defended attempt
@@ -130,6 +148,16 @@ Configure positive integer limits with `TAX_MAX_CONSECUTIVE_UNUSABLE` (default
 corresponding `max_consecutive_unusable`, `max_consecutive_refiner_errors` and
 `max_consecutive_refiner_400` constructor arguments. Resolved limits appear in the
 manifest and scenario logs.
+
+An exploit prompt lists the line's earlier failed variants (or the seed's earlier
+failed rewrites) and the judge's accumulated feedback, keeping only the most
+recent ones: at most 10 of each by default, set with `TAX_PARA_HISTORY_WINDOW` and
+`TAX_SIGNAL_HISTORY_WINDOW`.
+
+A scenario log lists every attempt that did not succeed under `failed_templates`,
+with its `status`: `failed` for an attempt the target resisted, and an `infra_`
+status for one that failed in the infrastructure (also listed under
+`infra_failures`).
 
 Modes 1 and 2 receive only the judge's fixed failure-category phrase;
 its free-text explanation is withheld to keep the injection goal hidden. Mode 3

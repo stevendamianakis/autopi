@@ -16,13 +16,27 @@ The contract is deliberately tiny — four things:
 
 AgentDojo implements this over their stateful multi-step environment and
 state-based checkers; IPI Arena implements it as a single ``{fill}`` placement, one target
-turn, and its tool-judge + concealment-judge scoring.
+turn, and its scoring by a tool judge and an LLM judge.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Iterator, Protocol, runtime_checkable
+
+# A context overflow, worded as providers and servers word it: OpenAI and vLLM ("maximum context
+# length", context_length_exceeded), Anthropic ("prompt is too long"), Gemini ("exceeds the
+# maximum number of tokens"), llama.cpp ("exceeds the available context size"), vLLM's "longer
+# than the maximum model length" and "is too long and exceeds", and Hugging Face TGI ("must have
+# less than N tokens", "max_new_tokens must be <="). Both adapters treat it as an error of the
+# scenario, not of the endpoint. A request that merely names max_tokens (for example
+# "Unsupported parameter: 'max_tokens'") does not match.
+CONTEXT_OVERFLOW = re.compile(
+    r"context_length_exceeded|context length|maximum context|reduce the length|too many tokens"
+    r"|prompt is too long|input is too long|exceeds the (?:model'?s? )?(?:maximum|context)"
+    r"|exceeds? the available context|maximum model length|is too long and exceeds"
+    r"|must have less than \d+ tokens|max_new_tokens\W+must be <=", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

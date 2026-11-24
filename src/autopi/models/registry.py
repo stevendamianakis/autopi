@@ -122,14 +122,17 @@ def build_target_pipeline(
         from agentdojo.agent_pipeline.llms.google_llm import GoogleLLM
         from google import genai
 
-        from autopi.models.clients import require_no_reasoning_effort
+        from autopi.models.clients import google_config_fields, require_no_reasoning_effort
 
         require_no_reasoning_effort(endpoint)
+        # Validate the alias's extra fields now, as the SDK does for the generator: a misspelt field
+        # is refused at setup, and a camelCase one (thinkingConfig) is sent instead of dropped.
+        extra_fields = google_config_fields(endpoint)
         options = {"timeout": int(endpoint.timeout * 1000), "retry_options": {"attempts": endpoint.retries + 1}}
         if endpoint.base_url:
             options["base_url"] = endpoint.base_url
         client = genai.Client(api_key=endpoint.api_key(), http_options=options)
-        _instrument_google(client.models, endpoint, journal)
+        _instrument_google(client.models, endpoint, journal, extra_fields)
         llm = GoogleLLM(endpoint.model, client)
         llm.name = endpoint.model
     else:
@@ -262,21 +265,24 @@ class _GeminiThoughtSignatures:
         return out
 
 
-def _instrument_google(resource, endpoint, journal):
+def _instrument_google(resource, endpoint, journal, extra_fields=None):
     original = resource.generate_content
     signatures = _GeminiThoughtSignatures()
 
-    from autopi.models.clients import google_omitted_fields
+    from autopi.models.clients import google_config_fields, google_omitted_fields
 
     omitted = google_omitted_fields(endpoint)
+    if extra_fields is None:
+        extra_fields = google_config_fields(endpoint)
 
     def call(*args, **kwargs):
         updates = {key: value for key, value in {
             "temperature": endpoint.temperature, "top_p": endpoint.top_p,
             "max_output_tokens": endpoint.max_tokens}.items() if value is not None}
-        if endpoint.extra_body:
-            # Extra GenerateContentConfig fields (e.g. thinking_config) for Google native calls.
-            updates.update(endpoint.extra_body)
+        if extra_fields:
+            # Extra GenerateContentConfig fields (e.g. thinking_config), validated by the SDK's
+            # own model, for Google native calls.
+            updates.update(extra_fields)
         # An omitted field is cleared, AgentDojo's own value included (its Gemini client always
         # sets temperature 0 and a 65,535-token cap); the SDK sends no field that is None.
         updates.update({key: None for key in omitted})

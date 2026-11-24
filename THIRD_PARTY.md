@@ -19,11 +19,13 @@ AutoPI's root README describes this integration.
 
 Changes relative to the bundled upstream revisions:
 
-- AgentDojo `local_llm.py`: propagate provider transport failures rather than
-  returning empty text, so AutoPI can identify infrastructure failures. Tool
-  argument parsing and benchmark checkers are retained. Thinking mode is not
-  forced inside the benchmark; AutoPI applies the configured per-role setting
-  in its own client.
+- AgentDojo `local_llm.py` (the prompted-tool client): remove the catch-all
+  `except Exception` that turned any failed request into an empty reply. Every
+  request error (a transport failure, a rate limit, an HTTP 400 such as a context
+  overflow) now reaches AutoPI, which records the attempt as unmeasured, or, for a
+  content-policy refusal, has AgentDojo score it as a defended attempt. Upstream
+  scored an errored prompted request as an empty final reply. Tool argument parsing
+  and benchmark checkers are retained.
 - AgentDojo `anthropic_llm.py`: construct message dictionaries directly instead
   of calling the SDK's `MessageParam` type alias, which is a union in current
   Anthropic SDKs. Its test fixtures use the same representation. A

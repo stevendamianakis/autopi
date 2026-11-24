@@ -26,11 +26,15 @@ from autopi.core.engine import TaxonomyEngine
 # out, is rate limited, fails on the server, or rejects every request, for example over an
 # unsupported parameter or a missing tool-call parser): after this many target attempts in a
 # row, or after this many scenarios in a row whose every attempt failed that way. Continuing
-# would only keep paying the generator for scenarios that can never be measured. Errors tied to
-# one scenario (a context overflow, a malformed tool call) do not count toward either, so a
-# scenario that always fails on its own cannot stop the run.
+# would only keep paying the generator for scenarios that can never be measured. An error tied
+# to one scenario (a context overflow, a malformed tool call) counts toward neither, and shows
+# that the endpoint answers: it resets both. A scenario whose first _MAX_SCENARIO_INFRA_ATTEMPTS
+# attempts all fail in the infrastructure, whatever the error, ends early and is left for
+# --resume, so a scenario that always fails on its own neither stops the run nor uses its whole
+# budget, and --resume moves past it instead of stopping on it again.
 _MAX_CONSECUTIVE_ENDPOINT_ATTEMPTS = 25
 _MAX_CONSECUTIVE_INFRA = 10
+_MAX_SCENARIO_INFRA_ATTEMPTS = 10
 
 
 class CorruptScenarioLogError(ValueError):
@@ -103,12 +107,14 @@ class RunSummary:
         return {sid for o in self.outcomes for src in o.solved_sources if src != "SEED" for sid in src.split("+")}
 
     def format(self) -> str:
-        lines = [
-            f"benchmark={self.benchmark} mode={self.awareness_mode} points={self.n}",
-            f"ASR={self.asr:.3f} ({self.successes}/{self.n})",
-            f"ASR@1={self.asr_at(1):.3f}  ASR@10={self.asr_at(10):.3f}  ASR@100={self.asr_at(100):.3f}",
-        ]
-        if not self.stop_at_first_success:
+        lines = [f"benchmark={self.benchmark} mode={self.awareness_mode} points={self.n}"]
+        if self.n:
+            lines += [f"ASR={self.asr:.3f} ({self.successes}/{self.n})",
+                      f"ASR@1={self.asr_at(1):.3f}  ASR@10={self.asr_at(10):.3f}  ASR@100={self.asr_at(100):.3f}"]
+        else:
+            # No scenario was measured: an ASR of 0/0 is undefined, not 0.
+            lines.append("ASR=n/a (no scenario was scored)")
+        if not self.stop_at_first_success and self.n:
             made = sum(o.attempts for o in self.outcomes)
             hits = sum(o.successful_attempts for o in self.outcomes)
             lines.append(
@@ -177,7 +183,8 @@ def run_attack(
             or set a number to bound it explicitly.
         points: override the points to attack (defaults to ``adapter.iter_points()``).
         verbose: print a one-line result per point.
-        resume: skip data points whose per-pair log already exists.
+        resume: skip data points whose per-pair log already exists, and run the ones an earlier
+            run lost entirely to infrastructure errors (``infrastructure_only.jsonl``) last.
         stop_at_first_success: end a data point at its first success. Set False to run the
             point's whole schedule and record every success, for the technique coverage of a
             scenario or an attempt-level ASR without early stopping. Left as None, a strategy
@@ -193,6 +200,30 @@ def run_attack(
     pts = list(points) if points is not None else list(adapter.iter_points())
     consecutive_infra = 0
     consecutive_endpoint_attempts = 0
+    # Scenarios lost entirely to infrastructure errors are listed in this file. --resume runs them
+    # after the others, so a group of scenarios that fail on their own (several injection tasks of
+    # one user task whose context overflows, say) cannot stop every resumed run before the rest.
+    lost_record = logdir / "infrastructure_only.jsonl" if logdir is not None else None
+    if resume and lost_record is not None and lost_record.exists():
+        lost = set()
+        for line in lost_record.read_text(encoding="utf-8").splitlines():
+            try:
+                item = json.loads(line)
+                lost.add((item["suite"], item["user_task"], item["injection_task"]))
+            except (ValueError, KeyError, TypeError):
+                continue
+        if lost:
+            pts = ([p for p in pts if (p.suite, p.user_task_id, p.injection_task_id) not in lost]
+                   + [p for p in pts if (p.suite, p.user_task_id, p.injection_task_id) in lost])
+
+    def record_lost(point: AttackPoint, attempts: int, endpoint_errors: int) -> None:
+        if lost_record is None:
+            return
+        lost_record.parent.mkdir(parents=True, exist_ok=True)
+        with lost_record.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"suite": point.suite, "user_task": point.user_task_id,
+                                     "injection_task": point.injection_task_id, "attempts": attempts,
+                                     "endpoint_errors": endpoint_errors}) + "\n")
 
     for point in pts:
         if journal:
@@ -236,6 +267,7 @@ def run_attack(
         infrastructure_failures = 0
         endpoint_failures = 0
         first_success_attempt: int | None = None
+        ended_early = False
         infos: list = []
         # has_candidate is False only in no-seed mode when no first candidate could be written.
         while engine.has_candidate:
@@ -266,11 +298,18 @@ def run_attack(
                 infrastructure_failures += 1
                 engine.mark_attempt_infra_failed(infra_kind or "infra", info=infra_info or None)
                 if consecutive_endpoint_attempts >= _MAX_CONSECUTIVE_ENDPOINT_ATTEMPTS:
+                    if infrastructure_failures == attempts:
+                        record_lost(point, attempts, endpoint_failures)
                     raise TargetUnavailableError(
                         f"the target failed {consecutive_endpoint_attempts} attempts in a row with endpoint errors "
                         f"(last: {infra_kind}): it is unavailable or rejects every request, for example over an "
                         "unsupported parameter, a missing tool-call parser or an invalid key; stopping before this "
                         "scenario is logged. Check the target endpoint, then rerun the same command with --resume")
+                if infrastructure_failures == attempts and attempts >= _MAX_SCENARIO_INFRA_ATTEMPTS:
+                    # Nothing about this scenario was measured: end it here and leave it for --resume
+                    # rather than spend the rest of its budget on attempts that fail the same way.
+                    ended_early = True
+                    break
             else:
                 if result.info and ("action_only" in result.info or "is_break" in result.info):
                     infos.append({"attempt": attempts, "is_break": result.info.get("is_break"),
@@ -295,13 +334,16 @@ def run_attack(
         if attempts and infrastructure_failures == attempts:
             # The target never answered: no measurement. Leave the point for --resume.
             summary.infrastructure_only.append(point)
+            record_lost(point, attempts, endpoint_failures)
             if journal:
                 journal.emit("point_end", succeeded=False, attempts=attempts, infrastructure_only=True)
             if verbose:
+                early = (f" (ended early: its first {attempts} attempts all failed)" if ended_early else "")
                 print(f"[infra] {adapter.name}/{point.suite}/{point.user_task_id}+{point.injection_task_id}: "
-                      f"all {attempts} attempt(s) failed in the infrastructure; not logged, --resume runs it again")
-            # Only endpoint errors say the target is broken; a scenario lost to errors of its own
-            # (a context overflow, malformed tool calls) neither counts nor resets the streak.
+                      f"all {attempts} attempt(s) failed in the infrastructure{early}; not logged, --resume runs it again")
+            # Only endpoint errors say the target is broken. A scenario lost to errors of its own
+            # (a context overflow, malformed tool calls) shows that the endpoint answers: it does not
+            # count toward the stop, and it ends the streak.
             if endpoint_failures == attempts:
                 consecutive_infra += 1
                 if consecutive_infra >= _MAX_CONSECUTIVE_INFRA:
@@ -309,6 +351,8 @@ def run_attack(
                         f"the target failed every attempt of {consecutive_infra} scenarios in a row with endpoint "
                         "errors (unavailable, or rejecting every request); stopping. Check the target endpoint, "
                         "then rerun the same command with --resume to continue")
+            else:
+                consecutive_infra = 0
             continue
         consecutive_infra = 0
 

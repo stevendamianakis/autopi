@@ -1,5 +1,28 @@
 # Release notes
 
+## Version 0.3.2
+
+A review-driven fix release. No bundled benchmark file changed, and AgentDojo's and
+IPI Arena's own execution, injection and scoring are unchanged. The generator and
+judge prompts are unchanged. The run manifest fingerprints AutoPI's code, so a run
+started with 0.3.1 cannot be resumed with 0.3.2: finish it with 0.3.1 or start a
+fresh output directory.
+
+| Area | Change |
+|---|---|
+| Reasoning in replies | Reasoning is removed only where it opens a reply, and not at all when the server returned it in a field of its own (`reasoning_content` or `reasoning`, as a reasoning parser does). The text before a lone `</think>` is removed only with `thinking: on`. Before, `<think>` text was removed wherever it sat on every OpenAI-compatible or Ollama endpoint whose thinking was not `off`, also with a parser and on hosted services such as Azure, so a quoted tag could cut a prompted tool call or break IPI Arena's judge verdict (scored 0). IPI Arena replies now also drop a leading block that never closes, as the docs said. A prompted target that writes `<think>` in the middle of its reply keeps it as content |
+| Scenarios that fail on their own | A scenario whose first ten attempts all fail in the infrastructure ends there and is left for `--resume`, which runs such scenarios after the others (they are listed in `LOGDIR/infrastructure_only.jsonl`). A scenario lost to its own errors now ends the "ten scenarios in a row" streak, as an error tied to one attempt already ended the attempt streak. The context-overflow wordings are shared by both adapters and include llama.cpp's, vLLM's "maximum model length", Gemini's and Hugging Face TGI's. Before, an overflow worded otherwise could stop the run on one scenario and stop `--resume` there again |
+| Nothing scored | When no scenario of a run was scored, the summary prints the ASR as `n/a` (it printed `0.000 (0/0)`), and the command exits with an error |
+| IPI Arena browser scenarios | Setup also checks that playwright's Chromium is installed, not only the playwright package; without it every browser attempt failed while the generator was still called |
+| Gemini settings | A target's `extra_body` is checked against the SDK's `GenerateContentConfig` at setup, as the generator's already was: a misspelt field is refused, and a camelCase field such as `thinkingConfig` is sent instead of silently dropped. A request for the model's thoughts is refused in either spelling, `include_thoughts` or the API's `includeThoughts`. A Google generator that cannot be reached is reported as unreachable |
+| Ollama | A native Ollama target with `thinking: on` sends `reasoning_effort` (the alias's, else `medium`); AgentDojo's client passed an unset value that kept it out. The Ollama generator, which calls Ollama's native chat API, has no such field: the CLI prints a note when the alias sets one |
+| Traces and manifest | A field named like a password or a secret keeps its name and structure with its value shown as `<redacted>`, instead of being dropped (AgentDojo's `update_password` call was traced with empty arguments). A `user:password` part of a `base_url` is left out of the manifest and the traces, and so are the Google SDK's HTTP response headers |
+| Command line | `--judge`, `--worldsim` and the `--ipi-*` options are refused on AgentDojo, where they had no effect. A folder that holds another run is refused before any request, so nothing is written into it. `autopi --version` prints the version, and `autopi.__version__` holds it. With `--strategy`, the missing-seed error suggests a strategy without a seed block instead of `--no-seed` |
+| AgentDojo | A user task that reads no injection vector (AgentDojo's "is not injectable") is an error of that scenario instead of a crash |
+| Examples and packaging | The L2 sweep of `repeated-phases.yaml` and of the strategy guide's example now pair sub-techniques of both techniques. `examples/run_examples.sh` runs IPI Arena's tool and coding scenarios. The SDK extras require the versions the bundled AgentDojo needs. CI lints the tests too and runs with read-only permissions |
+| Documentation | Corrected: what the reasoning removal does, the 120-second cap on a `Retry-After` wait, the three content-policy refusal forms AutoPI recognises, a custom `base_url` on `anthropic` and `google` aliases, that every taxonomy file is softened, that combinations are listed in a fixed order, how `StrategyEngine` takes exploit counts, the `max_attempts` log fields, the exploit-prompt history windows, the `local_llm.py` change in THIRD_PARTY.md, and how AgentDojo's own runner scores failed runs |
+| Tests | Regression tests for every change above and for 0.3.1 fixes that had none; each new test was checked to fail when its fix is reverted. Tests no longer leave API-key variables set for the session or depend on the working directory |
+
 ## Version 0.3.1
 
 A review-driven correctness and model-support release. No bundled benchmark file
