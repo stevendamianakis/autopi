@@ -8,8 +8,7 @@
 <h1 align="center">AutoPI</h1>
 
 <p align="center">
-  Code for the paper<br>
-  <b>AutoPI: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in LLM Agents</b>
+  <b>Taxonomy-guided adaptive red teaming for prompt injection in LLM agents</b>
 </p>
 
 <p align="center">
@@ -24,7 +23,14 @@ indirect prompt injection for every sub-technique of a prompt-injection taxonomy
 that fail using feedback from an LLM judge.
 
 <p align="center">
-  <img src="assets/intuition.png" width="100%" alt="A sketch of the attack space of one scenario. Coloured regions hold the injections that work, one per technique. Dashed Explore hops sweep the taxonomy and land near every region. Short Exploit steps refine what failed and close in on a success. A strong seed starts beside a region, a weak seed far from all of them.">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/intuition-dark.png">
+    <img src="assets/intuition.png" width="100%" alt="A sketch of the attack space of one scenario. Coloured regions hold the injections that work, one per technique. Dashed Explore hops sweep the taxonomy and land near every region. Short Exploit steps refine what failed and close in on a success. A strong seed starts beside a region, a weak seed far from all of them.">
+  </picture>
+</p>
+
+<p align="center">
+  <sub>Working injections are rare and are conjectured to lie in regions, one per technique. <b>Explore</b> lands near every region and <b>Exploit</b> closes in.</sub>
 </p>
 
 - **Coverage-aware.** Tries every sub-technique, so you see *which* attacks work, not only how often.
@@ -34,7 +40,7 @@ that fail using feedback from an LLM judge.
 
 ## Quick start
 
-Install AutoPI with the bundled AgentDojo. Python 3.11 is recommended.
+**1. Install** AutoPI with the bundled AgentDojo. Python 3.11 is recommended.
 
 ```bash
 git clone https://github.com/stevendamianakis/autopi
@@ -43,8 +49,8 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e . -e benchmarks/agentdojo
 ```
 
-Run the Full strategy on all 949 AgentDojo scenarios, with the target and the generator on an
-OpenAI-compatible server such as vLLM:
+**2. Run** the Full strategy on all 949 AgentDojo scenarios, with the target and the generator on an
+OpenAI-compatible server such as vLLM.
 
 ```bash
 autopi run --benchmark agentdojo \
@@ -54,69 +60,22 @@ autopi run --benchmark agentdojo \
   --logdir runs/agentdojo-full
 ```
 
+Start vLLM with `--enable-auto-tool-choice` and the model's `--tool-call-parser`, or pass
+`--tool-calling prompted` ([details](docs/models.md#serving-a-vllm-target)). Add `--dry-run` to check the
+settings and count the scenarios without calling a model.
+
+**3. Read the results** in `runs/agentdojo-full`, which holds the run's settings and every attempt of
+every scenario.
+
 > [!WARNING]
 > **Use an open-weight model as the generator.** In our experience, frontier models such as Claude
-> Haiku 5.5, GPT-6 Luna and more capable ones refuse to write prompt injections almost every time in
-> the generator role, which makes them impractical there. Open-weight models with less strict
-> cybersecurity safeguards work well, for example Qwen3.8-27B or Qwen3.6-35B, the generator used in the
-> paper. On the contrary, frontier models can be used without any issues as the target or as AutoPI's judge
-> (`--autopi-judge`).
-
-> [!TIP]
-> Add `--dry-run` to check the settings and count the scenarios without calling a model.
-
-- **Serving the target.** Start vLLM with `--enable-auto-tool-choice` and the model's `--tool-call-parser`, or pass `--tool-calling prompted` ([details](docs/models.md#serving-a-vllm-target)).
-- **Results.** `--logdir` holds the run's settings and every attempt of every scenario.
-- **Names.** A few code names differ from the paper's terms. The [glossary](docs/glossary.md) maps them.
-
-### More setups
+> Haiku 5.5, GPT-6 Luna and more capable ones refuse to write prompt injections almost every time.
+> Open-weight models with less strict cybersecurity safeguards work well, for example Qwen3.8-27B or
+> Qwen3.6-35B, the paper's generator. Frontier models can be used without any issues as the target or
+> as AutoPI's judge (`--autopi-judge`).
 
 <details>
-<summary><b>Hosted models and per-role settings</b></summary>
-<br>
-
-Name each model once in a copy of `configs/models.example.yaml`, then pass the names. API keys are read
-from environment variables and never stored in the file.
-
-```bash
-cp configs/models.example.yaml configs/models.local.yaml
-autopi run --benchmark agentdojo --models-config configs/models.local.yaml \
-  --target target --generator generator \
-  --strategy configs/strategies/full.yaml --logdir runs/agentdojo-full
-```
-
-Short specs such as `anthropic:MODEL_ID` work without a file. [Model configuration](docs/models.md)
-covers providers, decoding settings and thinking modes.
-
-</details>
-
-<details>
-<summary><b>IPI Arena</b></summary>
-<br>
-
-```bash
-pip install -e benchmarks/ipi_arena
-# the 8 browser scenarios also need:
-pip install -e 'benchmarks/ipi_arena[browser]' && python -m playwright install chromium
-
-autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
-  --target arena-target --generator generator --ipi-judge arena-judge --ipi-worldsim arena-judge \
-  --seed-source agentdojo \
-  --strategy configs/strategies/full.yaml --logdir runs/ipiarena-full
-```
-
-IPI Arena has 41 scenarios: 18 tool use, 15 coding and 8 browser. A scenario counts as broken only when
-every one of its criteria passes (`--ipi-ignore-concealment` scores the action alone). `--ipi-judge` and
-`--ipi-worldsim` pick the models of IPI Arena's scoring judge and tool simulator, which are part of the
-benchmark, not AutoPI's judge (`--autopi-judge`). The benchmark
-ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy without a seed block.
-Browser scenarios need an image-capable target, playwright and its Chromium; without them, leave the
-browser scenarios out with `--suite tool --suite coding`.
-
-</details>
-
-<details>
-<summary><b>More options</b></summary>
+<summary><b>Common options</b></summary>
 <br>
 
 - `--mode 3`, the default and the paper's setting, shows the generator the user task and the injection goal.
@@ -137,11 +96,17 @@ browser scenarios out with `--suite tool --suite coding`.
 ## How it works
 
 <p align="center">
-  <img src="assets/architecture.png" width="100%" alt="The AutoPI architecture. The engine holds three phases: Initialize with an optional fixed seed, Explore by sweeping a taxonomy, and Exploit by refining failed injections. It sends a prompt to the generator LLM, which writes one injection. The adapter places the injection and runs the target agent once in the benchmark's environment, whose checker reports the outcome. The transcript of a failed attempt goes to the judge LLM, whose diagnosis returns to the engine.">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.png">
+    <img src="assets/architecture.png" width="100%" alt="The AutoPI architecture. The engine holds three phases: Initialize with an optional fixed seed, Explore by sweeping a taxonomy, and Exploit by refining failed injections. It sends a prompt to the generator LLM, which writes one injection. The adapter places the injection and runs the target agent once in the benchmark's environment, whose checker reports the outcome. The transcript of a failed attempt goes to the judge LLM, whose diagnosis returns to the engine.">
+  </picture>
 </p>
 
-Working injections are rare and are conjectured to lie in regions, one per technique. AutoPI searches
-in three phases, which a strategy can skip, resize, repeat or reorder:
+<p align="center">
+  <sub>In one attempt, the generator writes an injection, the adapter runs the target once, and the judge diagnoses the attempt if it fails.</sub>
+</p>
+
+AutoPI searches in three phases, which a strategy can skip, resize, repeat or reorder:
 
 1. **Initialize** with an optional fixed seed injection, tried with no generator call.
 2. **Explore** with a taxonomy sweep. The generator writes one short injection line for every sub-technique.
@@ -179,65 +144,68 @@ blocks:
 
 </details>
 
-Blocks can be omitted, reordered or repeated, as long as each exploit block follows the block it
-refines ([`repeated-phases.yaml`](configs/strategies/repeated-phases.yaml) is an example).
+- **Blocks** can be omitted, reordered or repeated, as long as each exploit block follows the block it
+  refines ([`repeated-phases.yaml`](configs/strategies/repeated-phases.yaml) is an example).
+- **An Ln sweep** writes one line for each set of n sub-techniques (`level` in the YAML), following the
+  intuition that working injections are often compositions of several techniques. The PIAtlas paper
+  ([arXiv:2610.24999](https://arxiv.org/abs/2610.24999)) finds that the median curated injection template
+  spans two classes and three techniques. The paper's strategies use L1 only.
 
-An **Ln sweep** writes one line for each set of n sub-techniques (`level` in the YAML), following the
-intuition that working injections are often compositions of several techniques. The PIAtlas paper
-([arXiv:2610.24999](https://arxiv.org/abs/2610.24999)) finds that attacks usually combine several
-techniques, with the median curated injection template spanning two classes and three techniques. The
-paper's strategies use L1 only. More in the [strategy guide](docs/strategies.md).
+More in the [strategy guide](docs/strategies.md).
 
-## Taxonomy
+## Benchmarks, models and taxonomy
 
-AutoPI ships with [PIAtlas](https://stevendamianakis.github.io/piatlas-site/) as its default taxonomy:
-6 classes, 34 techniques and 131 sub-techniques, plus one technique without sub-techniques, so a full
-sweep has 132 units. Any taxonomy in the same JSON layout can replace it through `--taxonomy-path`.
+| Part | Included | Use your own |
+|---|---|---|
+| **Benchmarks** | AgentDojo (949 scenarios), IPI Arena (41) | An adapter with a name and two methods ([Extending AutoPI](docs/extending.md)) |
+| **Models** | OpenAI-compatible, OpenAI, Anthropic, Google, Ollama | Named models in a YAML file, or a short spec such as `anthropic:MODEL_ID` ([Model configuration](docs/models.md)) |
+| **Taxonomy** | [PIAtlas](https://stevendamianakis.github.io/piatlas-site/), 132 sweep units | `--taxonomy-path` loads any taxonomy in the same JSON layout |
 
-## Add a benchmark
-
-The engine never imports a benchmark. An adapter gives it a name and two methods:
-
-```python
-class MyBenchmark:
-    name = "my-benchmark"
-
-    def iter_points(self):
-        """Yield the scenarios to attack, each with its user task and injection goal."""
-
-    def run(self, point, injection_text):
-        """Place the injection, run the target once, and return the outcome and the transcript."""
-```
-
-[Extending AutoPI](docs/extending.md) describes the full protocol and the Python API.
+PIAtlas has 6 classes, 34 techniques and 131 sub-techniques, plus one technique without sub-techniques,
+so a full sweep has 132 units.
 
 <details>
-<summary><b>Repository layout</b></summary>
+<summary><b>Hosted models and per-role settings</b></summary>
 <br>
 
-| Path | Contents |
-|---|---|
-| `src/autopi/` | The engine, its prompts, model clients, adapters and run harness |
-| `configs/` | The strategy files and an example model configuration |
-| `benchmarks/` | AgentDojo and IPI Arena at their latest upstream versions ([THIRD_PARTY.md](THIRD_PARTY.md)) |
-| `docs/` | Guides, release notes, validation and a glossary |
-| `tests/` | Tests of the engine |
-| `examples/`, `scripts/` | A script that runs both benchmarks, and a launcher for a local vLLM server |
+Name each model once in a copy of `configs/models.example.yaml`, then pass the names. API keys are read
+from environment variables and never stored in the file.
+
+```bash
+cp configs/models.example.yaml configs/models.local.yaml
+autopi run --benchmark agentdojo --models-config configs/models.local.yaml \
+  --target target --generator generator \
+  --strategy configs/strategies/full.yaml --logdir runs/agentdojo-full
+```
+
+Short specs such as `anthropic:MODEL_ID` work without a file. [Model configuration](docs/models.md)
+covers providers, decoding settings and thinking modes.
 
 </details>
 
 <details>
-<summary><b>Run the tests</b></summary>
+<summary><b>IPI Arena</b></summary>
 <br>
 
 ```bash
-pip install -e '.[dev,recovery]' -e benchmarks/agentdojo -e 'benchmarks/ipi_arena[dev]'
-python -m pytest -q tests
-python -m pytest -q benchmarks/agentdojo/tests benchmarks/ipi_arena/tests --import-mode=importlib
+pip install -e benchmarks/ipi_arena
+# the 8 browser scenarios also need:
+pip install -e 'benchmarks/ipi_arena[browser]' && python -m playwright install chromium
+
+autopi run --benchmark ipiarena --models-config configs/models.local.yaml \
+  --target arena-target --generator generator \
+  --ipi-judge arena-judge --ipi-worldsim arena-judge \
+  --seed-source agentdojo \
+  --strategy configs/strategies/full.yaml --logdir runs/ipiarena-full
 ```
 
-CI runs them on Python 3.10, 3.11 and 3.12, and `requirements-tested.txt` holds the package versions
-validated locally.
+IPI Arena has 41 scenarios: 18 tool use, 15 coding and 8 browser. A scenario counts as broken only when
+every one of its criteria passes (`--ipi-ignore-concealment` scores the action alone). `--ipi-judge` and
+`--ipi-worldsim` pick the models of IPI Arena's scoring judge and tool simulator, which are part of the
+benchmark, not AutoPI's judge (`--autopi-judge`). The benchmark
+ships no seed, so use `--seed-source agentdojo`, a `--seed-file`, or a strategy without a seed block.
+Browser scenarios need an image-capable target, playwright and its Chromium; without them, leave the
+browser scenarios out with `--suite tool --suite coding`.
 
 </details>
 
@@ -252,9 +220,34 @@ to match, what to report, and why two runs of the same setup can differ.
 
 ## Getting help
 
-- **Understanding the code.** The [paper](https://arxiv.org/abs/2611.24313) explains the method, and [`docs/`](docs/) covers strategies, models and new benchmarks.
+- **Understanding the code.** The [paper](https://arxiv.org/abs/2611.24313) explains the method. The guides in [`docs/`](docs/) cover [models](docs/models.md), [strategies](docs/strategies.md), [new benchmarks](docs/extending.md), [comparing results](docs/reproducing.md), [code names](docs/glossary.md) and [release notes](docs/release-notes.md).
 - **Issues and bugs.** We highly recommend debugging with [Claude Code](https://claude.com/claude-code) or any of Anthropic's [Claude models](https://platform.claude.com/docs/en/models/overview). Claude Code can read the code, rerun the failing command and run the tests.
 - **Anything else.** Feel free to email Stavros Damianakis at [sdamiana@usc.edu](mailto:sdamiana@usc.edu) anytime.
+
+<details>
+<summary><b>Repository layout and tests</b></summary>
+<br>
+
+| Path | Contents |
+|---|---|
+| `src/autopi/` | The engine, its prompts, model clients, adapters and run harness |
+| `configs/` | The strategy files and an example model configuration |
+| `benchmarks/` | AgentDojo and IPI Arena at their latest upstream versions ([THIRD_PARTY.md](THIRD_PARTY.md)) |
+| `docs/` | Guides, release notes, validation and a glossary |
+| `tests/` | Tests of the engine |
+| `examples/`, `scripts/` | A script that runs both benchmarks, and a launcher for a local vLLM server |
+
+```bash
+pip install -e '.[dev,recovery]' -e benchmarks/agentdojo -e 'benchmarks/ipi_arena[dev]'
+python -m pytest -q tests
+python -m pytest -q benchmarks/agentdojo/tests benchmarks/ipi_arena/tests \
+  --import-mode=importlib
+```
+
+CI runs the tests on Python 3.10, 3.11 and 3.12, and `requirements-tested.txt` holds the package versions
+validated locally.
+
+</details>
 
 ## Citation
 
@@ -262,7 +255,8 @@ The paper is on arXiv: [arXiv:2611.24313](https://arxiv.org/abs/2611.24313).
 
 ```bibtex
 @misc{damianakis2026autopi,
-  title         = {{AutoPI}: Taxonomy-Guided Adaptive Red Teaming for Prompt Injection in {LLM} Agents},
+  title         = {{AutoPI}: Taxonomy-Guided Adaptive Red Teaming for
+                   Prompt Injection in {LLM} Agents},
   author        = {Damianakis, Stavros and Psounis, Konstantinos},
   year          = {2026},
   eprint        = {2611.24313},
