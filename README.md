@@ -68,11 +68,11 @@ settings and count the scenarios without calling a model.
 every scenario.
 
 > [!WARNING]
-> **Use an open-weight model as the generator.** In our experience, frontier models such as Claude
-> Haiku 5.5, GPT-6 Luna and more capable ones refuse to write prompt injections almost every time.
-> Open-weight models with less strict cybersecurity safeguards work well, for example Qwen3.8-27B or
-> Qwen3.6-35B, the paper's generator. Frontier models can be used without any issues as the target or
-> as AutoPI's judge (`--autopi-judge`).
+> **Use a model with a low refusal rate and less strict cybersecurity classifiers as the generator.**
+> In our experience, frontier models such as Claude Haiku 5.5, GPT-6 Luna and more capable ones refuse
+> to write prompt injections almost every time. Open-weight models with less strict cybersecurity
+> safeguards work well, for example Qwen3.8-27B or Qwen3.6-35B, the paper's generator. Frontier models
+> can be used without any issues as the target or as AutoPI's judge (`--autopi-judge`).
 
 <details>
 <summary><b>Common options</b></summary>
